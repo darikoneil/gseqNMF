@@ -1,0 +1,271 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+
+#///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+#// PROJECT CONFIGURATION (GENERAL)
+#///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+[project]
+name = "{{ project_name }}"
+version = "0.0.0"
+description = "DESCRIPTION"
+readme = "README.md"
+requires-python = ">=3.0, <=4.0"
+license = {file = "LICENSE"}
+keywords = [
+    "KEYWORD"
+]
+authors = [
+  {name = "Darik A. O'Neil"}
+]
+maintainers = [
+    {name = "Darik A. O'Neil"}
+]
+classifiers = [
+    "Programming Language :: Python",
+]
+
+
+#///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+#// PACKAGE DEPENDENCIES
+#///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+dependencies = [
+]
+
+
+#///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+#// PACKAGE URLS
+#///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+[project.urls]
+documentation = "https://github.com/darikoneil/darik_oneil_python_template"
+repository = "https://github.com/darikoneil/darik_oneil_python_template"
+
+
+#///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+#// OPTIONAL DEPENDENCIES (INCLUDING TEMPLATE DEPENDENCIES)
+#///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+[project.optional-dependencies]
+testing = [
+    "importlib-metadata",
+    "pytest",
+    "pytest-sugar",
+    "pytest-clarity",
+    "toml",
+    "tomli-w"
+]
+linting = [
+    "black",
+    "flake8",
+    "flake8-annotations",
+    "flake8-annotations-complexity",
+    "flake8-builtins",
+    "flake8-bugbear",
+    "flake8-class-attributes-order",
+    "flake8-comprehensions",
+    "flake8-dunder-all",
+    "flake8-eradicate",
+    "flake8-html",
+    "flake8-isort",
+    "flake8-mutable",
+    "flake8-simplify",
+    "flake8-unused-arguments",
+    "flake8-use-pathlib",
+    "isort",
+    "tryceratops",
+]
+coverage = [
+    "coverage[toml]",
+    "coveralls",
+    "toml",
+    "tomli-w"
+]
+distribution = [
+    "build",
+    "twine",
+]
+documentation = [
+    "autoclasstoc",
+    "autodoc_pydantic",
+    "sphinx",
+    "sphinx-autodoc-typehints",
+    "sphinx-gallery",
+    "sphinx-rtd-theme",
+]
+all = [
+    "{{ project_name }}[testing]",
+    "{{ project_name }}[linting]",
+    "{{ project_name }}[coverage]",
+    "{{ project_name }}[distribution]",
+    "{{ project_name }}[documentation]",
+]
+
+
+#///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+#// BUILD CONFIGURATION (SETUPTOOLS)
+#///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+[tool.setuptools]
+packages = [
+    "{{ project_name }}",
+]
+
+
+#///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+#// TESTING CONFIGURATION (PYTEST)
+#///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+[tool.pytest.ini_options]
+addopts = [
+    "--import-mode=importlib",
+    "-s",
+    "--color=yes",
+    "-vv",
+    "--diff-width=120",
+]
+tests = "tests"
+console_output_style = "progress"
+
+
+#///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+#// COVERAGE CONFIGURATION (COVERAGE)
+#///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+[tool.coverage.run]
+branch = true
+command_line = "-m pytest"
+omit = [
+    "*/tests/*",
+]
+dynamic_context = "test_function"
+
+[tool.coverage.report]
+fail_under = 75
+exclude_also = [
+    "def __repr__",
+    "def __name__",
+    "def __del__",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "except ImportError",
+    "@(abc\\.)?abstractmethod",
+    "@(abc\\.)?abstractproperty",
+    "@(abc\\.)?abstractclassmethod",
+    "@(abc\\.)?abstractstaticmethod"
+]
+
+[tool.coverage.json]
+pretty_print = true
+
+[tool.coverage.html]
+show_contexts = true
+
+#///////////////////////////////////////////////////////////////////////////////////////
+#// GENERAL RUFF CONFIUGRATION
+#///////////////////////////////////////////////////////////////////////////////////////
+
+[tool.ruff]
+exclude = [
+    "*/Scratches/*",
+    "*/.idea/*",
+    "*/scripts/*",
+    "*/.git/*",
+    "*/.github/*",
+    "*/.vscode/*",
+    "*/__pycache__/*",
+    "*/.pytest_cache/*",
+    "*/*.egg-info/*",
+    "*/build/*",
+    "*/dist/*",
+    "*/.mypy_cache/*",
+    "*/.tox/*",
+    "*coverage*",
+    "*/.cache/*",
+    "*/docs/*",
+    "*/venv/*",
+    "*.gitignore",
+    "README.md",
+    "LICENSE",
+    ".flake8",
+    "*/linting/*",
+    ".readthedocs.yaml",
+    "*/Scratches and Consoles/*",
+    "*/External Libraries/*",
+    "*/assets/*"
+]
+line-length = 88 # Black Compatibility
+indent-width = 4 # Black Compatibility
+output-format = "json"
+
+#///////////////////////////////////////////////////////////////////////////////////////
+#// LINTING CONFIGURATION (RUFF)
+#///////////////////////////////////////////////////////////////////////////////////////
+
+
+[tool.ruff.lint]
+select = ["ALL", ]
+ignore = [
+    # /////////////////////////////////////////////////////////
+    # IGNORE THESE ENTIRE MODULES
+    # /////////////////////////////////////////////////////////
+    "C90", # mccabe complexity
+    "D", # pydocstyle
+    "DJ",  # django
+    "EXE", # flake8-executable
+    "PD", # pandas
+    "PL", # pylint
+    "PLR", # pylint refactor is super opinionated
+    "T10", # debugger
+    "TID", # flake8-tidy-imports
+    # /////////////////////////////////////////////////////////
+    # IGNORE THESE SPECIFIC RULES
+    # /////////////////////////////////////////////////////////
+    "ANN204",
+    "COM812",
+    "ANN401",
+    "ANN002",
+    "ANN003",
+    "E203",
+    "E501",
+    "E701",
+    "COM812",
+    'ERA001', 'T201', # Code comments
+    'RET503', # No explicit return None
+    "TRY003", # external messages in exceptions are too verbose
+]
+
+[tool.ruff.lint.flake8-annotations]
+allow-star-arg-any = true
+
+[tool.ruff.lint.flake8-boolean-trap]
+extend-allowed-calls = ["pydantic.Field", ]
+
+[tool.ruff.lint.flake8-import-conventions.extend-aliases]
+# Declare the default aliases.
+...
+
+#///////////////////////////////////////////////////////////////////////////////////////
+#// FORMATTING CONFIGURATION (RUFF)
+#///////////////////////////////////////////////////////////////////////////////////////
+
+
+[tool.ruff.format]
+quote-style = "double"  # Black Compatibility
+indent-style = "space"  # Black Compatibility
+skip-magic-trailing-comma = false  # Black Compatibility
+line-ending = "auto"  # Black Compatibility
+docstring-code-format = true  # Auto-formatting of code examples in docstrings
+docstring-code-line-length = "dynamic"  # Line length for code examples in docstrings
+
