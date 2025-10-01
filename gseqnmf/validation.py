@@ -6,11 +6,20 @@ import numpy as np
 from numpy.typing import ArrayLike
 from sklearn.utils._param_validation import Interval, StrOptions
 
+from gseqnmf.exceptions import SeqNMFInitializationError
+
 try:
     import cupy as cp
-except ImportError:
-    cp = None
+except ImportError:  # pragma: no cover
+    cp = None  # pragma: no cover
 
+
+__all__ = [
+    "INITIALIZATION_METHODS",
+    "INIT_METHOD",
+    "PARAMETER_CONSTRAINTS",
+    "NDArrayLike",
+]
 
 #: Define a custom type alias `NDArrayLike` to represent a flexible array-like type.
 #: This type can be:
@@ -40,7 +49,7 @@ class INIT_METHOD(Enum):  # noqa: N801
         except ValueError as exc:
             msg = f"Unknown initialization method: {value}. "
             msg += f"Available methods are: {INIT_METHOD.options()}"
-            raise ValueError(msg) from exc
+            raise SeqNMFInitializationError(msg) from exc
 
     @staticmethod
     def options() -> list[str]:

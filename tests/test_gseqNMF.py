@@ -1,5 +1,6 @@
 import pytest  # noqa: N999
 
+from gseqnmf.exceptions import SeqNMFInitializationError
 from gseqnmf.gseqnmf import GseqNMF
 from tests.conftest import MEANING_OF_LIFE, Dataset
 
@@ -25,7 +26,6 @@ class TestGseqNMF:
             random_state=MEANING_OF_LIFE,
         )
 
-    @pytest.mark.skip(reason="known failure")
     @pytest.mark.parametrize(
         ("method", "expected"),
         [
@@ -60,7 +60,7 @@ class TestGseqNMF:
         nndsvd_nonneg_mock.return_value = expected[1:]
 
         # noinspection PyTupleAssignmentBalance
-        padded_X, W_init, H_init = GseqNMF._initialize(  # noqa: N806, SLF001
+        padded_X, W_init, H_init, _ = GseqNMF._initialize(  # noqa: N806, SLF001
             X=self.test_dataset.data.copy(),
             n_components=self.test_dataset.parameters["num_components"],
             sequence_length=self.test_dataset.parameters["sequence_length"],
@@ -71,11 +71,9 @@ class TestGseqNMF:
         )
         assert (padded_X, W_init, H_init) == expected
 
-    @pytest.mark.skip(reason="known failure")
     def test_initialize_invalid_method(self) -> None:
         with pytest.raises(
-            ValueError,
-            match="Invalid init method: invalid. Choose from",  # noqa: RUF043
+            SeqNMFInitializationError,
         ):
             GseqNMF._initialize(  # noqa: SLF001
                 X=self.test_dataset.data.copy(),
@@ -85,7 +83,6 @@ class TestGseqNMF:
                 random_state=MEANING_OF_LIFE,
             )
 
-    @pytest.mark.skip(reason="known failure")
     def test_get_params(self) -> None:
         params = self.model.get_params()
         expected_params = {

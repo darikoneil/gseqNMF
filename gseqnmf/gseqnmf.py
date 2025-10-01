@@ -5,8 +5,10 @@ from warnings import warn
 import numpy as np
 from scipy.signal import convolve2d
 from sklearn.base import BaseEstimator, TransformerMixin, _fit_context
+from sklearn.utils.validation import check_is_fitted
 from tqdm import tqdm
 
+from gseqnmf.exceptions import SeqNMFInitializationError
 from gseqnmf.support import (
     calculate_power,
     compute_loading_percent_power,
@@ -57,7 +59,6 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         init: INITIALIZATION_METHODS | INIT_METHOD = INIT_METHOD.RANDOM,
         random_state: int | None = None,
     ):
-        ##########################################
         self.n_components: int = n_components
         self.sequence_length: int = sequence_length
         self.lam: float = lam
@@ -69,25 +70,22 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         self.lam_H: float = lam_H
         self.shift: bool = shift
         self.sort: bool = sort
-        self.update_w: bool = update_W
+        self.update_W: bool = update_W
         self.init = init
         self.random_state = random_state
-
         ###########################################
-        self.n_features_in = None
-        self.n_samples_in = None
-
-        ###########################################
+        self._is_fitted: bool = False
+        # NOTE: This is an  sklearn flag to indicate if the model has been fitted.
+        self.n_features_in: int | None = None
+        self.n_samples_in: int | None = None
         self.W_ = None
         self.H_ = None
         self.cost_ = None
         self.loadings_ = None
         self.power_ = None
-
-        ############################################
         self._validate_params()
         # NOTE: This is sklearn's internal validation routine that leverages the
-        # class attribute _parameter_constraints attribute defined above.
+        #   class attribute _parameter_constraints attribute defined above.
 
     @staticmethod
     def _initialize(
@@ -134,17 +132,19 @@ class GseqNMF(TransformerMixin, BaseEstimator):
                     raise ValueError(msg)
                 W_init = W_init  # noqa: N806
                 H_init = H_init  # noqa: N806
-            case "nndsvd":
+            case INIT_METHOD.NNDSVD:
                 (W_init, H_init) = nndsvd_init(  # noqa: N806
                     X,
                     n_components,
                     sequence_length,
                 )
             case _:
+                # noinspection PyUnreachableCode
                 msg = (
                     f"Invalid init method: {init}. Choose from {INIT_METHOD.options()}."
                 )
-                raise ValueError(msg)
+                # noinspection PyUnreachableCode
+                raise SeqNMFInitializationError(msg)
 
         return padded_X, W_init, H_init, init
 
@@ -178,8 +178,6 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         n_samples: int,
         n_components: int,
         sequence_length: int,
-        # lam_W: float,
-        # lam_H: float,
         max_iter: int,
     ) -> dict[str, np.ndarray]:
         n_samples = n_samples + 2 * sequence_length
@@ -381,7 +379,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
 
             if self.lam_W > 0:
                 w_flat = W.sum(axis=2)
-            if (local_lam > 0) and self.update_w:
+            if (local_lam > 0) and self.update_W:
                 xs = conv_func(X)
 
             for shift in range(self.sequence_length):
@@ -389,7 +387,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
                 x_ht = np.dot(X, h_shifted.T)
                 x_hat_ht = np.dot(x_hat, h_shifted.T)
 
-                if (local_lam > 0) and self.update_w:
+                if (local_lam > 0) and self.update_W:
                     subgradient_W = np.dot(  # noqa: N806
                         local_lam * np.dot(xs, h_shifted.T), off_diagonal
                     )
@@ -425,22 +423,21 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             self.W_ = self.W_[:, sorting_indices, :]
             self.H_ = self.H_[sorting_indices, :]
             self.loadings_ = self.loadings_[sorting_indices]
+        self._is_fitted = True
+        return self
 
     def get_params(self, deep: bool = True) -> dict:  # noqa: ARG002
-        return {
-            "n_components": self.n_components,
-            "sequence_length": self.sequence_length,
-            "lam": self.lam,
-        }
+        return {key: getattr(self, key) for key in self._parameter_constraints}
 
     def set_params(self, **params) -> "GseqNMF":
         for key, value in params.items():
-            if not hasattr(self, key):
+            if key not in self._parameter_constraints:
                 msg = (
                     f"Invalid parameter {key} for estimator {self.__class__.__name__}."
                 )
                 raise AttributeError(msg)
             setattr(self, key, value)
+        self._validate_params()
         return self
 
     def fit_transform(
@@ -459,10 +456,12 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         """
         raise NotImplementedError
 
-    def transform(self, X: np.ndarray) -> np.ndarray:  # noqa: N803
+    # noinspection PyUnusedLocal
+    def transform(self, X: np.ndarray) -> np.ndarray:  # noqa: ARG002, N803
         """
         Transform the data X using the fitted model.
         """
+        check_is_fitted(self)
         raise NotImplementedError
 
     # noinspection PyMethodMayBeStatic
@@ -475,9 +474,9 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         H = H if H is not None else self.H_  # noqa: N806
         return reconstruct(W, H)
 
-    def score(self, X: np.ndarray) -> float:  # noqa: N803
-        raise NotImplementedError
-
     # noinspection PyMethodMayBeStatic
     def _more_tags(self) -> dict[str, bool]:
         return {"stateless": False}
+
+    def __sklearn_is_fitted__(self) -> bool:
+        return self._is_fitted

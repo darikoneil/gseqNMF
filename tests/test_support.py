@@ -6,8 +6,59 @@ except ImportError:
     cp = np
 import pytest
 
-from gseqnmf.support import pad_data, rmse
-from tests.conftest import Dataset
+from gseqnmf.support import HYPERPARAMETER_LABELS, create_textbar, pad_data, rmse
+from tests.conftest import BlockPrinting, Dataset
+
+
+@pytest.mark.parametrize(
+    ("n_components", "sequence_length", "hyperparameters", "expected_desc"),
+    [
+        pytest.param(
+            5,
+            10,
+            {
+                "lam": 0.05,
+                "alpha_H": 0.2,
+                "alpha_W": 0.001,
+                "lam_H": 0.5,
+                "lam_W": 0.0001,
+            },
+            f"n_components = 5, "
+            f"sequence length = 10, "
+            f"{HYPERPARAMETER_LABELS['lam']} = 5.000e-02, "
+            f"{HYPERPARAMETER_LABELS['alpha_H']} = 0.200, "
+            f"{HYPERPARAMETER_LABELS['alpha_W']} = 1.000e-03, "
+            f"{HYPERPARAMETER_LABELS['lam_H']} = 0.500, "
+            f"{HYPERPARAMETER_LABELS['lam_W']} = 1.000e-04",
+            id="valid hyperparameters",
+        ),
+        pytest.param(
+            3,
+            15,
+            {"lam": 0.9, "alpha_W": 0.00},
+            f"n_components = 3, sequence length = 15, "
+            f"{HYPERPARAMETER_LABELS['lam']} = 0.900",
+            id="ignore zero hyperparameter",
+        ),
+        pytest.param(
+            2,
+            5,
+            {"lam": 0.0},
+            "n_components = 2, sequence length = 5",
+            id="no hyperparameters",
+        ),
+    ],
+)
+def test_create_textbar(
+    n_components: int, sequence_length: int, hyperparameters: dict, expected_desc: str
+) -> None:
+    with BlockPrinting():
+        progress_bar = create_textbar(n_components,
+                                      sequence_length,
+                                      100,
+                                      **hyperparameters)
+        assert progress_bar.desc == expected_desc
+        progress_bar.close()
 
 
 class TestPadData:
