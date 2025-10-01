@@ -1,4 +1,3 @@
-# flake8: noqa
 import os
 import subprocess
 import sys
@@ -7,19 +6,20 @@ from pathlib import Path
 import pytest
 import toml
 
-
 """
-A super disgusting way to test the packages install on WINDOWS ONLY. 
+A super disgusting way to test the packages install on WINDOWS ONLY.
 I wrote this when I first learned python, but it works so I kepe it around for the lols.
 """
-def retrieve_details(path) -> tuple[str, str, list[str]]:
+
+
+def retrieve_details(path: Path | str) -> tuple[str, str, list[str]]:
     """
     Get the package details
 
     :param path: The path to the package's pyproject.toml
     :returns: The name, version, and dependencies of the package
     """
-    
+
     details = toml.load(path).get("project")
     name = details.get("name")
     version = details.get("version")
@@ -27,7 +27,7 @@ def retrieve_details(path) -> tuple[str, str, list[str]]:
     return name, version, dependencies
 
 
-def retrieve_project_directory(path) -> Path:
+def retrieve_project_directory(path: Path | str) -> Path:
     """
     Retrieves the project's directory
 
@@ -44,12 +44,11 @@ def retrieve_project_file() -> os.PathLike:
     :returns: The project file
     :raises FileNotFoundError: if not found
     """
-    
-    project_file = os.path.join(os.getcwd(), "pyproject.toml")
-    if not os.path.exists(project_file):
-        project_file = os.path.join(Path(os.getcwd()).parent, "pyproject.toml")
-    if not os.path.exists(project_file):
-        raise FileNotFoundError("Can't find project file")
+    if not (project_file := Path.cwd().joinpath("pyproject.toml")).exists():
+        project_file = Path.cwd().parent.joinpath("pyproject.toml")
+    if not project_file.exists():
+        msg = "Could not find pyproject.toml"
+        raise FileNotFoundError(msg)
     return project_file
 
 
@@ -62,7 +61,13 @@ def collect_project() -> tuple[Path, os.PathLike, str, str, list[str]]:
     project_file = retrieve_project_file()
     project_directory = retrieve_project_directory(project_file)
     package_name, package_version, package_dependencies = retrieve_details(project_file)
-    return project_directory, project_file, package_name, package_version, package_dependencies
+    return (
+        project_directory,
+        project_file,
+        package_name,
+        package_version,
+        package_dependencies,
+    )
 
 
 # get project information and work from correct directory
@@ -76,7 +81,6 @@ print(f"Package dependencies: {pkg_dependencies}")
 @pytest.mark.parametrize("path", [proj_dir])
 def test_install(path):
     try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "-e ."])
+        subprocess.check_call([sys.executable, "uv", "sync"])
     except subprocess.CalledProcessError as e:
         print(f"{e.output}")
-        # This doesn't work on non-windows systems

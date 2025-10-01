@@ -5,13 +5,14 @@ setlocal enabledelayedexpansion
 cd ..
 
 echo [0;33m "Formatting (RUFF)..." [0m
-ruff format ./{{ project_name }} ./tests
+ruff format ./gseqNMF ./tests
 
 echo [0;33m "Linting (RUFF)..." [0m
-ruff check ./{{ project_name }} ./tests -o .ruff.json --output-format json --fix --no-cache
+ruff check ./gseqNMF ./tests -o .ruff.json --output-format json --fix --no-cache
 
 :: too opinionated for linting tests
 echo [0;33m "Linting (FLAKE8 PLUGINS)..." [0m
-flake8 ./{{ project_name }}
+flake8 ./gseqNMF
 
-echo [0;33m "Finished Formatting & Linting
+echo [0;33m "Finished Formatting & Linting" [0m
+endlocal

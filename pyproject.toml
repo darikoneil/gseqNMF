@@ -1,5 +1,5 @@
-\[build-system]
-requires = ["setuptools"]
+[build-system]
+requires = ["setuptools", ]
 build-backend = "setuptools.build_meta"
 
 
@@ -9,11 +9,11 @@ build-backend = "setuptools.build_meta"
 
 
 [project]
-name = "{{ project_name }}"
-version = "0.0.0"
+name = "gseqnmf"
+version = "0.0.2"
 description = "DESCRIPTION"
 readme = "README.md"
-requires-python = ">=3.0, <=4.0"
+requires-python = ">=3.12, <=4.0"
 license = {file = "LICENSE"}
 keywords = [
     "KEYWORD"
@@ -35,6 +35,11 @@ classifiers = [
 
 
 dependencies = [
+    "numba>=0.62.1",
+    "numpy>=2.3.3",
+    "scikit-learn>=1.7.2",
+    "setuptools>=80.9.0",
+    "tqdm>=4.67.1",
 ]
 
 
@@ -44,8 +49,8 @@ dependencies = [
 
 
 [project.urls]
-documentation = "https://github.com/darikoneil/{{ project_name }}"
-repository = "https://github.com/darikoneil/{{ project_name }}"
+documentation = "https://github.com/darikoneil/gseqNMF"
+repository = "https://github.com/darikoneil/gseqNMF"
 
 
 #///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -53,11 +58,16 @@ repository = "https://github.com/darikoneil/{{ project_name }}"
 #///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 [project.optional-dependencies]
+cuda12 = [
+    "cupy-cuda12x",
+]
 test = [
     "importlib-metadata",
+    "polars[numpy,pyarrow]",
     "pytest",
     "pytest-sugar",
     "pytest-clarity",
+    "pytest-mock",
     "toml",
     "tomli-w"
 ]
@@ -79,14 +89,22 @@ docs = [
     "sphinx",
     "sphinx-autodoc-typehints",
     "autodoc_pydantic",
-    "sphinx-rtd-theme"
+    "sphinx-rtd-theme",
+    "jinja2",
+]
+vis = [
+    "cmocean",
+    "matplotlib",
+    "PyQt6",
 ]
 dev = [
-    "{{ project_name }}[tes]",
-    "{{ project_name }}[lint]",
-    "{{ project_name }}[cov]",
-    "{{ project_name }}[docs]",
-    "{{ project_name }}[prod]",
+    "gseqNMF[cuda12]",
+    "gseqNMF[test]",
+    "gseqNMF[lint]",
+    "gseqNMF[cov]",
+    "gseqNMF[docs]",
+    "gseqNMF[prod]",
+    "gseqNMF[vis]",
 ]
 
 
@@ -97,7 +115,7 @@ dev = [
 
 [tool.setuptools]
 packages = [
-    "{{ project_name }}",
+    "gseqnmf",
 ]
 
 
@@ -114,7 +132,6 @@ addopts = [
     "-vv",
     "--diff-width=120",
 ]
-tests = "tests"
 console_output_style = "progress"
 
 
@@ -233,6 +250,8 @@ ignore = [
     "TD003",
     "TRY003", # external messages in exceptions are too verbose
     "S101",
+    "FBT001", # boolean trap is not a trap...
+    "FBT002", # boolean trap is not a trap...
 ]
 
 [tool.ruff.lint.flake8-annotations]
@@ -243,7 +262,6 @@ extend-allowed-calls = ["pydantic.Field", ]
 
 [tool.ruff.lint.flake8-import-conventions.extend-aliases]
 # Declare the default aliases.
-...
 
 #///////////////////////////////////////////////////////////////////////////////////////
 #// FORMATTING CONFIGURATION (RUFF)
@@ -259,9 +277,9 @@ docstring-code-format = true  # Auto-formatting of code examples in docstrings
 docstring-code-line-length = "dynamic"  # Line length for code examples in docstrings
 
 [tool.uv.sources]
-{{ project_name } = { workspace = true }
+gseqNMF = { workspace = true }
 
 [dependency-groups]
 dev = [
-    "{{ project_name }}[dev]",
+    "gseqNMF[dev]",
 ]
