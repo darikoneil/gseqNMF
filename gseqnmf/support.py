@@ -341,3 +341,49 @@ def nndsvd_init(
     # DOC-ME: Add docstring for nndsvd_init function
     # TODO: Implement the NNDSVD initialization algorithm.
     # TEST: Add tests for nndsvd_init function in test_support.py
+
+
+def trans_tensor_convolution(
+    X: np.ndarray,  # noqa: N803
+    x_hat: np.ndarray,
+    W: np.ndarray,  # noqa: N803
+    wt_x: np.ndarray,
+    wt_x_hat: np.ndarray,
+    sequence_length: int,
+) -> None:
+    """
+    Compute W⊤ ⊛ X and W⊤ ⊛ X̂ using tensor convolution.
+
+    :param X: Input data matrix (n_features x n_samples).
+    :param x_hat: Reconstructed data matrix (n_features x n_samples).
+    :param W: Weight tensor (n_features x n_components x sequence_length).
+    :param wt_x: Preallocated output for W⊤ ⊛ X (n_components x n_samples).
+    :param wt_x_hat: Preallocated output for W⊤ ⊛ X̂ (n_components x n_samples).
+    :param sequence_length: Length of the sequences.
+
+    :returns: None. Outputs are written to pre-allocated wt_x and wt_x_hat.
+    """  # noqa: RUF002
+    """
+    ====================================================================================
+    This is an optimized implementation of the tranpose tensor convolution operation
+    W⊤ ⊛ X and W⊤ ⊛ X̂ used in the seqNMF algorithm. It avoids rolling the large data
+    matrices X and X̂ by instead rolling the smaller intermediate results. W should be
+    much smaller than X in 99% of use cases, leading to significant performance
+    improvements. This implementation has time complexity of ~O(NKLS), where N is
+    the number of features, K is the number of components,L is the sequence length,
+    and S is the number of samples. The space complexity reduction is ~N/K, since we
+    only need to store the small intermediate results instead of making rolled copies of
+    the large data matrices. This implementation is substantially faster than the
+    fully vectorized Einstein summation, which has time complexity of ~O(NKLS + KLS^2)
+    due to the convolution step, and is also more memory efficient since it avoids
+    creating large intermediate tensors.
+    ====================================================================================
+    """  # noqa: RUF001
+    wt_x.fill(0)
+    wt_x_hat.fill(0)
+    for step in range(sequence_length):
+        temp_x  = W[:, :, step].T @ X
+        temp_x_hat = W[:, :, step].T @ x_hat
+        shift = -step + 1
+        wt_x     += np.roll(temp_x,  shift, axis=1)
+        wt_x_hat += np.roll(temp_x_hat, shift, axis=1)

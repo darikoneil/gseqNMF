@@ -55,9 +55,7 @@ class INIT_METHOD(Enum):  # noqa: N801
     @staticmethod
     def options() -> list[str]:
         return [m.value for m in INIT_METHOD]
-
-
-# DOC-ME: Write docstring explained each method.
+    # DOC-ME: Write docstring explained each method.
 
 #: Options for initialization methods in the GseqNMF algorithm (Docs/Hints).
 INITIALIZATION_METHODS: type[str] = Literal["random", "exact", "nndsvd"]

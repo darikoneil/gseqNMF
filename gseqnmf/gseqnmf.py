@@ -20,6 +20,7 @@ from gseqnmf.support import (
     reconstruct,
     rmse,
     shift_factors,
+    trans_tensor_convolution,
 )
 from gseqnmf.validation import (
     INIT_METHOD,
@@ -225,11 +226,15 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         power_func = partial(calculate_power, X=padded_X, padding_index=padding_index)
         kernel = np.ones([1, (2 * sequence_length) - 1])
         conv_func = partial(convolve2d, in2=kernel, mode="same")
+        tensor_func = partial(trans_tensor_convolution,
+                              X=padded_X,
+                              sequence_length=sequence_length)
         return {
             "cost": cost_func,
             "loading": loading_func,
             "power": power_func,
             "conv": conv_func,
+            "tensor": tensor_func,
         }
 
     @staticmethod
@@ -254,8 +259,6 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         n_samples = n_samples + 2 * sequence_length
         cost = np.ones((max_iter + 1, 1)) * np.nan
         x_hat = np.empty((n_features, n_samples))
-        x_shifted = np.empty_like(x_hat)
-        x_hat_shifted = np.empty_like(x_hat)
         xs = np.empty_like(x_hat)
         w_flat = np.empty((n_features, n_components))
         wt_x = np.empty((n_components, n_samples))
@@ -263,8 +266,6 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         return {
             "cost": cost,
             "x_hat": x_hat,
-            "x_shifted": x_shifted,
-            "x_hat_shifted": x_hat_shifted,
             "wt_x": wt_x,
             "wt_x_hat": wt_x_hat,
             "xs": xs,
@@ -325,11 +326,12 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         memory-bound, so we want to avoid unnecessary allocations. This also helps make
         sure that any out of memory errors are caught as early as possible.
         ================================================================================
-        4.) Solve by iteratively updating W and H using penalized multiplicative
-        update rules until convergence or reaching the maximum number of iterations.
+        4.) Solve by iteratively calling penalized multiplicative updates
+        until convergence or reaching the maximum number of iterations.
         ================================================================================
         5.) After fitting, store the final W and H matrices, as well as the training
         cost, loadings, and power.
+        ================================================================================
         """
         X, W, H, self.init = self._initialize(  # noqa: N806
             X=X,
@@ -345,6 +347,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         loading_func = _handles["loading"]
         power_func = _handles["power"]
         conv_func = _handles["conv"]
+        trans_tensor_conv_func = _handles["tensor"]
 
         _arrays = self._preallocate(
             self.n_features_in,
@@ -355,8 +358,6 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         )
         cost = _arrays["cost"]
         x_hat = _arrays["x_hat"]
-        x_shifted = _arrays["x_shifted"]
-        x_hat_shifted = _arrays["x_hat_shifted"]
         xs = _arrays["xs"]
         w_flat = _arrays["w_flat"]
         wt_x = _arrays["wt_x"]
@@ -412,16 +413,8 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             ):
                 local_lam = 0
 
-            wt_x.fill(0)
-            wt_x_hat.fill(0)
-            for shift in range(self.sequence_length):
-                x_shifted.fill(0)
-                x_hat_shifted.fill(0)
-                x_shifted += np.roll(X, -shift + 1, axis=1)
-                x_hat_shifted += np.roll(x_hat, -shift + 1, axis=1)
-                wt_x += np.dot(W[:, :, shift].T, x_shifted)
-                wt_x_hat += np.dot(W[:, :, shift].T, x_hat_shifted)
-            #: NOTE: Vectorized solution is actually slower due to einsum
+            trans_tensor_conv_func(W=W, x_hat=x_hat, wt_x=wt_x, wt_x_hat=wt_x_hat)
+            #: NOTE: This calculation of W⊤⊛X & W⊤⊛X̂ is a bottleneck.  # noqa: RUF003
 
             if local_lam > 0:
                 subgradient_H = np.dot(  # noqa: N806
