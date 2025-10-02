@@ -18,6 +18,7 @@ from gseqnmf.support import (
     random_init_H,
     random_init_W,
     reconstruct,
+    reconstruct_fast,
     rmse,
     shift_factors,
     trans_tensor_convolution,
@@ -26,6 +27,8 @@ from gseqnmf.validation import (
     INIT_METHOD,
     INITIALIZATION_METHODS,
     PARAMETER_CONSTRAINTS,
+    RECON_METHOD,
+    RECONSTRUCTION_METHODS,
 )
 
 __all__ = [
@@ -90,6 +93,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         sort: bool = True,
         update_W: bool = True,  # noqa: N803
         init: INITIALIZATION_METHODS | INIT_METHOD = INIT_METHOD.RANDOM,
+        recon: RECONSTRUCTION_METHODS | RECON_METHOD = RECON_METHOD.FAST,
         random_state: int | None = None,
     ):
         self.n_components: int = n_components
@@ -104,8 +108,9 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         self.shift: bool = shift
         self.sort: bool = sort
         self.update_W: bool = update_W
-        self.init = init
-        self.random_state = random_state
+        self.init: INITIALIZATION_METHODS | INIT_METHOD = init
+        self.recon: RECONSTRUCTION_METHODS | RECON_METHOD = recon
+        self.random_state: int | None = random_state
         ###########################################
         self._is_fitted: bool = False
         # NOTE: This is an  sklearn flag to indicate if the model has been fitted.
@@ -119,13 +124,15 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         self._validate_params()
         # NOTE: This is sklearn's internal validation routine that leverages the
         #   class attribute _parameter_constraints attribute defined above.
+        ############################################
+        self._set_recon_method()
 
     @staticmethod
     def _initialize(
         X: np.ndarray,  # noqa: N803
         n_components: int,
         sequence_length: int,
-        init: INITIALIZATION_METHODS,
+        init: INITIALIZATION_METHODS | INIT_METHOD,
         W_init: np.ndarray | None = None,  # noqa: N803
         H_init: np.ndarray | None = None,  # noqa: N803
         random_state: int | None = None,
@@ -210,9 +217,8 @@ class GseqNMF(TransformerMixin, BaseEstimator):
 
         :param padded_X: Padded input data.
         :param sequence_length: Length of the sequences.
-
-        :returns: Dictionary of function handles for cost, loading, power,
-            and convolution.
+        :param recon: Reconstruction method ('normal', 'fast').
+        :returns: Dictionary of function handles for various calculations.
         """
         padding_index = slice(sequence_length, -sequence_length)
         cost_func = partial(
@@ -226,9 +232,9 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         power_func = partial(calculate_power, X=padded_X, padding_index=padding_index)
         kernel = np.ones([1, (2 * sequence_length) - 1])
         conv_func = partial(convolve2d, in2=kernel, mode="same")
-        tensor_func = partial(trans_tensor_convolution,
-                              X=padded_X,
-                              sequence_length=sequence_length)
+        tensor_func = partial(
+            trans_tensor_convolution, X=padded_X, sequence_length=sequence_length
+        )
         return {
             "cost": cost_func,
             "loading": loading_func,
@@ -258,6 +264,9 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         """
         n_samples = n_samples + 2 * sequence_length
         cost = np.ones((max_iter + 1, 1)) * np.nan
+        h_shifted = np.zeros((n_features, n_components, n_samples))
+        # BUG: This actually may or may not be needed. Determine how we can
+        #  handle this without making spaghetti.
         x_hat = np.empty((n_features, n_samples))
         xs = np.empty_like(x_hat)
         w_flat = np.empty((n_features, n_components))
@@ -265,12 +274,24 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         wt_x_hat = np.empty_like(wt_x)
         return {
             "cost": cost,
+            "h_shifted": h_shifted,
             "x_hat": x_hat,
             "wt_x": wt_x,
             "wt_x_hat": wt_x_hat,
             "xs": xs,
             "w_flat": w_flat,
         }
+
+    # noinspection PyUnusedLocal
+    @staticmethod
+    def _inverse_transform(
+        W: np.ndarray,  # noqa: N803
+        H: np.ndarray,  # noqa: N803
+        h_shifted: np.ndarray | None,
+    ) -> np.ndarray:
+        """Placeholder for the inverse transform method set in _set_recon_method."""
+        msg = "This method should be set in _set_recon_method."
+        raise NotImplementedError(msg)
 
     @_fit_context(prefer_skip_nested_validation=True)
     def fit(
@@ -341,6 +362,8 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             W_init=W_init,
             H_init=H_init,
         )
+        # REVIEW: It might be cleaner to separate the initialization of W and H,
+        #  the padding of X, and/or the dispatching logic for the initialization method.
 
         _handles = self._prep_handles(X, self.sequence_length)
         cost_func = _handles["cost"]
@@ -357,21 +380,14 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             self.max_iter,
         )
         cost = _arrays["cost"]
+        h_shifted = _arrays["h_shifted"]
         x_hat = _arrays["x_hat"]
         xs = _arrays["xs"]
         w_flat = _arrays["w_flat"]
         wt_x = _arrays["wt_x"]
         wt_x_hat = _arrays["wt_x_hat"]
 
-        epsilon = np.max(X) * 1e-6
-        off_diagonal = 1 - np.eye(self.n_components)
         post_fix = {"cost": "N/A"}
-
-        local_lam = self.lam
-        local_tol = self.tol
-        local_max_iter = self.max_iter
-        IS_FIT = False  # noqa: N806
-
         textbar = create_textbar(
             self.n_components,
             self.sequence_length,
@@ -392,29 +408,38 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             colour="#6dff9b",
             # mininterval=0.25,
             postfix=post_fix,
-            position=1,
+            position=0,
             # delay=1e-10,
         )
         # BUG: tqdm bar sometimes rendering text only last
         #  or many reprints of progress  bar
+
+        epsilon = np.max(X) * 1e-6
+        off_diagonal = 1 - np.eye(self.n_components)
+        local_lam = self.lam
+        IS_FIT = False  # noqa: N806
+        # NOTE: We set local_lam to 0 at convergence when the IS_FIT flag is set.
+
         x_hat.fill(0)
-        x_hat += self.inverse_transform(W, H)
+        x_hat += self.inverse_transform(W, H, h_shifted)
         cost[0] = cost_func(x_hat=x_hat)
+        # NOTE: Initial cost before any updates
 
         for iter_ in range(1, self.max_iter + 1):
             if (
                 IS_FIT := (  # noqa: N806
-                    (iter_ == local_max_iter)
+                    (iter_ == self.max_iter)
                     or (
                         (iter_ > 5)
-                        and (np.nanmean(cost[iter_ - 5 : -1]) - cost[-1] < local_tol)
+                        and (np.nanmean(cost[iter_ - 5 : -1]) - cost[-1] < self.tol)
                     )
                 )
             ):
                 local_lam = 0
+            # NOTE: Convergence & stopping criterion
 
             trans_tensor_conv_func(W=W, x_hat=x_hat, wt_x=wt_x, wt_x_hat=wt_x_hat)
-            #: NOTE: This calculation of W⊤⊛X & W⊤⊛X̂ is a bottleneck.  # noqa: RUF003
+            #: NOTE: This calculation of Wt⊛X & Wt⊛X̂ is a bottleneck.
 
             if local_lam > 0:
                 subgradient_H = np.dot(  # noqa: N806
@@ -441,7 +466,8 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             for shift in range(self.sequence_length):
                 W[:, :, shift] = np.dot(W[:, :, shift], np.diag(norms))
 
-            x_hat = self.inverse_transform(W, H)
+            x_hat.fill(0)
+            x_hat += self.inverse_transform(W, H, h_shifted)
 
             if self.lam_W > 0:
                 w_flat = W.sum(axis=2)
@@ -468,6 +494,8 @@ class GseqNMF(TransformerMixin, BaseEstimator):
 
                 W[:, :, shift] *= np.divide(x_ht, x_hat_ht + subgradient_W + epsilon)
 
+            x_hat.fill(0)
+            x_hat += self.inverse_transform(W, H, h_shifted)
             cost[iter_] = cost_func(x_hat=x_hat)
             post_fix["cost"] = f"{cost[iter_].item():.4e}"
             pbar.update()
@@ -475,6 +503,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
 
             if IS_FIT:
                 break
+
         pbar.close()
         textbar.close()
 
@@ -489,7 +518,9 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             self.W_ = self.W_[:, sorting_indices, :]
             self.H_ = self.H_[sorting_indices, :]
             self.loadings_ = self.loadings_[sorting_indices]
+
         self._is_fitted = True
+
         return self
 
     def get_params(self, deep: bool = True) -> dict:  # noqa: ARG002
@@ -561,18 +592,45 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         self,
         W: np.ndarray | None = None,  # noqa: N803
         H: np.ndarray | None = None,  # noqa: N803
+        h_shifted: np.ndarray | None = None,
     ) -> np.ndarray:
         """
         Reconstruct the data from W and H matrices.
 
         :param W: W matrix. If None, uses the fitted ``W_``.
         :param H: H matrix. If None, uses the fitted ``H_``.
-
+        :param h_shifted: Pre-shifted H matrix (only used in certain implementations).
         :returns: Reconstructed data matrix.
         """
         W = W if W is not None else self.W_  # noqa: N806
         H = H if H is not None else self.H_  # noqa: N806
-        return reconstruct(W, H)
+        return self._inverse_transform(W=W, H=H, h_shifted=h_shifted)
+
+    def _set_recon_method(self) -> None:
+        """
+        Set the reconstruction method based on the specified parameter.
+
+        :raises SeqNMFInitializationError: If an invalid reconstruction method is
+            provided.
+        """
+        recon = (
+            RECON_METHOD.parse(self.recon)
+            if not isinstance(self.recon, RECON_METHOD)
+            else self.recon
+        )
+        match recon:
+            case RECON_METHOD.NORMAL:
+                self._inverse_transform = partial(reconstruct)
+            case RECON_METHOD.FAST:
+                self._inverse_transform = partial(reconstruct_fast)
+            case _:
+                # noinspection PyUnreachableCode
+                msg = (
+                    f"Invalid reconstruction method: {recon}. "
+                    f"Choose from {RECON_METHOD.options()}."
+                )
+                # noinspection PyUnreachableCode
+                raise SeqNMFInitializationError(msg)
 
     # noinspection PyMethodMayBeStatic
     def _more_tags(self) -> dict[str, bool]:

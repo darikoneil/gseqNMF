@@ -55,10 +55,45 @@ class INIT_METHOD(Enum):  # noqa: N801
     @staticmethod
     def options() -> list[str]:
         return [m.value for m in INIT_METHOD]
+
     # DOC-ME: Write docstring explained each method.
+
 
 #: Options for initialization methods in the GseqNMF algorithm (Docs/Hints).
 INITIALIZATION_METHODS: type[str] = Literal["random", "exact", "nndsvd"]
+
+
+class RECON_METHOD(Enum):  # noqa: N801
+    """
+    Enumeration of reconstruction method for the GseqNMF algorithm.
+    """
+
+    NORMAL = "normal"
+    FAST = "fast"
+
+    @staticmethod
+    def parse(value: str | Enum | None) -> "RECON_METHOD":
+        if isinstance(value, RECON_METHOD):
+            return value
+        if value is None:
+            return RECON_METHOD.FAST
+        try:
+            return RECON_METHOD.parse(value.lower())
+        except ValueError as exc:
+            msg = f"Unknown reconstruction solver: {value}. "
+            msg += f"Available solvers are: {RECON_METHOD.options()}"
+            raise SeqNMFInitializationError(msg) from exc
+
+    @staticmethod
+    def options() -> list[str]:
+        return [m.value for m in RECON_METHOD]
+
+    # DOC-ME: Write docstring explained each method.
+
+
+#: Options for recon methods in the GseqNMF algorithm (Docs/Hints).
+RECONSTRUCTION_METHODS: type[str] = Literal["normal", "fast"]
+
 
 #: Constraints for parameters
 PARAMETER_CONSTRAINTS: dict[str, list] = {
@@ -75,5 +110,6 @@ PARAMETER_CONSTRAINTS: dict[str, list] = {
     "sort": [bool],
     "update_W": [bool],
     "init": [StrOptions(set(INIT_METHOD.options())), INIT_METHOD, None],
+    "recon": [StrOptions(set(RECON_METHOD.options())), RECON_METHOD, None],
     "random_state": [int, None],
 }

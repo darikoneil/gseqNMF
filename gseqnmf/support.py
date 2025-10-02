@@ -113,9 +113,11 @@ def calculate_sequenciness() -> None:
     # TEST: Add tests for calculate_sequenciness function in test_support.py
 
 
+# noinspection PyUnusedLocal
 def reconstruct(
     W: NDArrayLike,  # noqa: N803
     H: NDArrayLike,  # noqa: N803
+    h_shifted: NDArrayLike | None = None,  # noqa: ARG001
     xp: ModuleType = np,
 ) -> NDArrayLike:
     """
@@ -123,22 +125,66 @@ def reconstruct(
 
     :param W: Basis matrix (n_features x n_components x sequence_length).
     :param H: Coefficient matrix (n_components x n_samples).
+    :param h_shifted: Preallocated array for shifted H (not used; API compatibility).
     :param xp: Array module (e.g., numpy or cupy) for computation.
     :return: Reconstructed data matrix (n_features x n_samples).
     """
-    n_features, n_components, sequence_length = W.shape
-    n_components_H, n_samples = H.shape  # noqa: N806
-    assert n_components == n_components_H, (
-        f"Mismatch in components: W has {n_components}, H has {n_components_H}."
-    )
-    if sequence_length > n_samples:
-        msg = f"sequence_length ({sequence_length}) cannot be greater than n_samples ({n_samples})."
-        raise ValueError(msg)
+    n_features, _, sequence_length = W.shape
+    _, n_samples = H.shape
     x_hat = xp.zeros((n_features, n_samples), dtype=W.dtype)
     for idx in range(sequence_length):
         x_hat += xp.dot(W[:, :, idx], xp.roll(H, idx - 1, axis=1))
     return x_hat
     # TEST: Add tests for reconstruct function in test_support.py
+
+
+def reconstruct_fast(
+    W: NDArrayLike,  # noqa: N803
+    H: NDArrayLike,  # noqa: N803
+    h_shifted: NDArrayLike | None = None,
+    xp: ModuleType = np,
+) -> NDArrayLike:
+    """
+    Reconstruct the data matrix from W and H. This version is optimized to perform
+    the reconstruction via a single operation, increasing performance at the cost of
+    higher memory usage.
+
+    :param W: Basis matrix (n_features x n_components x sequence_length).
+    :param H: Coefficient matrix (n_components x n_samples).
+    :param h_shifted: Preallocated array for shifted H
+        (sequence_length x n_components x n_samples).
+    :param xp: Array module (e.g., numpy or cupy) for computation.
+    :return: Reconstructed data matrix (n_features x n_samples).
+    """
+    """
+    ====================================================================================
+    Ideally, this function should be passed a pre-allocated h_shifted array to avoid
+    repeated memory allocation (sequence_length x n_components x n_samples). The
+    algorithm has a similar time complexity as the standard reconstruction, but more
+    optimally leverages optimized BLAS routines and cache locality. Unfortunately, this
+    implementation has a higher space complexity at ~O(CLS), where C is the number of
+    components, L is the sequence length, and S is the number of samples. This can be
+    pretty problematic for large datasets. In those cases, the standard reconstruction
+    function should be used instead, which has ~O(FS), where F is the number of
+    features.
+    ====================================================================================
+    """
+    _, n_components, sequence_length = W.shape
+    _, n_samples = H.shape
+
+    if h_shifted is None:
+        h_shifted = xp.zeros((sequence_length, n_components, n_samples), dtype=H.dtype)
+    else:
+        h_shifted.fill(0)
+
+    sample_index = xp.arange(n_samples)
+    sequence_index = xp.arange(sequence_length)[:, None]
+    idx = (sample_index[None, :] - (sequence_index - 1)) % n_samples
+
+    h_shifted += xp.swapaxes(H[:, idx], 0, 1)
+
+    return xp.tensordot(W, h_shifted, axes=([1, 2], [1, 0]))
+    # TEST: Add tests for reconstruct_fast function in test_support.py
 
 
 def rmse(
@@ -382,8 +428,11 @@ def trans_tensor_convolution(
     wt_x.fill(0)
     wt_x_hat.fill(0)
     for step in range(sequence_length):
-        temp_x  = W[:, :, step].T @ X
+        temp_x = W[:, :, step].T @ X
         temp_x_hat = W[:, :, step].T @ x_hat
         shift = -step + 1
-        wt_x     += np.roll(temp_x,  shift, axis=1)
+        wt_x += np.roll(temp_x, shift, axis=1)
         wt_x_hat += np.roll(temp_x_hat, shift, axis=1)
+    # NOTE: The assignments to temp_x and temp_x_hat are cheap and don't require
+    #  pre-allocation
+    # TEST: Add tests for function in test_support.py
