@@ -10,8 +10,8 @@ from tqdm import tqdm
 
 from gseqnmf.exceptions import SeqNMFInitializationError
 from gseqnmf.support import (
+    calculate_loading_power,
     calculate_power,
-    compute_loading_percent_power,
     create_textbar,
     nndsvd_init,
     pad_data,
@@ -36,7 +36,39 @@ class GseqNMF(TransformerMixin, BaseEstimator):
     """
     Sequential Non-negative Matrix Factorization (seqNMF) model.
 
-    Scikit-learn interface.
+    Implements the seqNMF algorithm for extracting sequential patterns from data.
+
+    This implementation is based on:
+
+        Mackevicius, E. L., Bahle, A. H., Williams, A. H., Gu, S., Denisenko, N. I.,
+        Goldman, M. S., & Fee, M. S. (2019). *Unsupervised discovery of temporal
+        sequences in high-dimensional datasets, with applications to neuroscience.*
+        eLife, 8, e38471. https://doi.org/10.7554/eLife.38471
+
+    Original seqNMF code: https://github.com/FeeLab/seqNMF
+
+    :param n_components: Number of components to extract.
+    :param sequence_length: Length of the sequential patterns.
+    :param lam: Regularization parameter for cross-factor competition.
+    :param max_iter: Maximum number of iterations.
+    :param tol: Tolerance for convergence.
+    :param alpha_W: L1 regularization for W.
+    :param lam_W: Cross-factor regularization for W.
+    :param alpha_H: L1 regularization for H.
+    :param lam_H: Cross-factor regularization for H.
+    :param shift: Whether to shift factors during updates.
+    :param sort: Whether to sort components by loading after fitting.
+    :param update_W: Whether to update W during fitting.
+    :param init: Initialization method for W and H.
+    :param random_state: Random seed for reproducibility.
+
+    :ivar  n_features_in_: Number of features in the input data.
+    :ivar  n_samples_in_: Number of samples in the input data.
+    :ivar W_: Fitted W matrix.
+    :ivar H_: Fitted H matrix.
+    :ivar cost_: Training cost per iteration.
+    :ivar loadings_: Component loadings.
+    :ivar power_: Component powers.
     """
 
     #: Sklearn parameter validation constraints
@@ -104,10 +136,10 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         :param n_components: Number of components.
         :param sequence_length: Length of the sequences.
         :param init: Initialization method ('random', 'exact', 'nndsvd').
-        :param W_init: Optional initial W matrix for 'exact' initialization.
-        :param H_init: Optional initial H matrix for 'exact' initialization.
+        :param W_init: Initial W matrix for 'exact' initialization.
+        :param H_init: Initial H matrix for 'exact' initialization.
         :param random_state: Random seed for reproducibility.
-        :return: Tuple of (padded_X, W_init, H_init, init).
+        :returns: Tuple of (padded_X, W_init, H_init, init).
         """
 
         padded_X = pad_data(X, sequence_length)  # noqa: N806
@@ -129,7 +161,26 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             case INIT_METHOD.EXACT:
                 if W_init is None or H_init is None:
                     msg = "W and H must be provided for 'exact' initialization."
-                    raise ValueError(msg)
+                    raise SeqNMFInitializationError(msg)
+                if (
+                    W_init.shape[0] != padded_X.shape[0]
+                    or W_init.shape[1] != n_components
+                    or W_init.shape[2] != sequence_length
+                ):
+                    msg = (
+                        "W must be a 3D array of shape "
+                        "(n_features, n_components, sequence_length)."
+                    )
+                    raise SeqNMFInitializationError(msg)
+                if (
+                    H_init.shape[0] != n_components
+                    or H_init.shape[1] != padded_X.shape[1]
+                ):
+                    msg = (
+                        "H must be a 2D array of shape "
+                        "(n_components, n_samples + 2 * sequence_length)."
+                    )
+                    raise SeqNMFInitializationError(msg)
                 W_init = W_init  # noqa: N806
                 H_init = H_init  # noqa: N806
             case INIT_METHOD.NNDSVD:
@@ -153,6 +204,15 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         padded_X: np.ndarray,  # noqa: N803
         sequence_length: int,
     ) -> dict[str, Callable]:
+        """
+        Prepare function handles for repeated calculations.
+
+        :param padded_X: Padded input data.
+        :param sequence_length: Length of the sequences.
+
+        :returns: Dictionary of function handles for cost, loading, power,
+            and convolution.
+        """
         padding_index = slice(sequence_length, -sequence_length)
         cost_func = partial(
             rmse,
@@ -160,7 +220,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             padding_index=padding_index,
         )
         loading_func = partial(
-            compute_loading_percent_power, X=padded_X, padding_index=padding_index
+            calculate_loading_power, X=padded_X, padding_index=padding_index
         )
         power_func = partial(calculate_power, X=padded_X, padding_index=padding_index)
         kernel = np.ones([1, (2 * sequence_length) - 1])
@@ -180,6 +240,17 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         sequence_length: int,
         max_iter: int,
     ) -> dict[str, np.ndarray]:
+        """
+        Preallocate arrays for intermediate calculations.
+
+        :param n_features: Number of features.
+        :param n_samples: Number of samples.
+        :param n_components: Number of components.
+        :param sequence_length: Length of the sequences.
+        :param max_iter: Maximum number of iterations.
+
+        :returns: Dictionary of preallocated arrays.
+        """
         n_samples = n_samples + 2 * sequence_length
         cost = np.ones((max_iter + 1, 1)) * np.nan
         x_hat = np.empty((n_features, n_samples))
@@ -209,14 +280,16 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         H_init: np.ndarray | None = None,  # noqa: N803
     ) -> "GseqNMF":
         """
-        Fit the gseqNMF model to the data X.
+        Fit the seqNMF model to the data ``X``.
 
         :param X: Input data matrix (n_features x n_samples).
-        :param y: Ignored, present for API consistency by convention.
-        :param W_init: Optional initial W matrix.
-        :param H_init: Optional initial H matrix.
+        :param y: Ignored, present for API consistency.
+        :param W_init: Initial W matrix.
+        :param H_init: Initial H matrix.
 
-        :returns: The fitted gseqNMF instance.
+        :returns: Fitted seqNMF instance.
+
+        :warns UserWarning: If ``y`` is not None.
         """
         if y is not None:
             msg = (
@@ -427,9 +500,26 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         return self
 
     def get_params(self, deep: bool = True) -> dict:  # noqa: ARG002
+        """
+        Get parameters for this estimator.
+
+        :param deep: If True, will return the parameters for this estimator and
+            contained subobjects.
+
+        :returns: Parameter names mapped to their values.
+        """
         return {key: getattr(self, key) for key in self._parameter_constraints}
 
     def set_params(self, **params) -> "GseqNMF":
+        """
+        Set the parameters of this estimator.
+
+        :param params: Estimator parameters.
+
+        :returns: Estimator instance.
+
+        :raises AttributeError: If an invalid parameter is provided.
+        """
         for key, value in params.items():
             if key not in self._parameter_constraints:
                 msg = (
@@ -447,19 +537,28 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         H: np.ndarray | None = None,  # noqa: N803
     ) -> np.ndarray:
         """
-        Fit the model to X and return the transformed data.
-        """
-        """
-        ///////////////////////////////////////////////////////////////////////////////
-        This is really just calling fit and then return H. Handled by mixin?
-        ///////////////////////////////////////////////////////////////////////////////
+        Fit the model to ``X`` and return the transformed data.
+
+        :param X: Input data matrix.
+        :param W: Initial W matrix.
+        :param H: Initial H matrix.
+
+        :returns: Transformed data (usually H matrix).
+
+        :raises NotImplementedError: This method is not yet implemented.
         """
         raise NotImplementedError
 
     # noinspection PyUnusedLocal
     def transform(self, X: np.ndarray) -> np.ndarray:  # noqa: ARG002, N803
         """
-        Transform the data X using the fitted model.
+        Transform the data ``X`` using the fitted model.
+
+        :param X: Input data matrix.
+
+        :returns: Transformed data.
+
+        :raises NotImplementedError: This method is not yet implemented.
         """
         check_is_fitted(self)
         raise NotImplementedError
@@ -470,13 +569,31 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         W: np.ndarray | None = None,  # noqa: N803
         H: np.ndarray | None = None,  # noqa: N803
     ) -> np.ndarray:
+        """
+        Reconstruct the data from W and H matrices.
+
+        :param W: W matrix. If None, uses the fitted ``W_``.
+        :param H: H matrix. If None, uses the fitted ``H_``.
+
+        :returns: Reconstructed data matrix.
+        """
         W = W if W is not None else self.W_  # noqa: N806
         H = H if H is not None else self.H_  # noqa: N806
         return reconstruct(W, H)
 
     # noinspection PyMethodMayBeStatic
     def _more_tags(self) -> dict[str, bool]:
+        """
+        Return scikit-learn tags for this estimator.
+
+        :returns: Dictionary of tag names mapped to tag values.
+        """
         return {"stateless": False}
 
     def __sklearn_is_fitted__(self) -> bool:
+        """
+        Return whether the estimator has been fitted.
+
+        :returns: True if fitted, False otherwise.
+        """
         return self._is_fitted

@@ -53,10 +53,9 @@ def test_create_textbar(
     n_components: int, sequence_length: int, hyperparameters: dict, expected_desc: str
 ) -> None:
     with BlockPrinting():
-        progress_bar = create_textbar(n_components,
-                                      sequence_length,
-                                      100,
-                                      **hyperparameters)
+        progress_bar = create_textbar(
+            n_components, sequence_length, 100, **hyperparameters
+        )
         assert progress_bar.desc == expected_desc
         progress_bar.close()
 

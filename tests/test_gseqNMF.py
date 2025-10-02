@@ -1,7 +1,10 @@
-import pytest  # noqa: N999
+# noqa: N999
+import numpy as np
+import pytest
 
 from gseqnmf.exceptions import SeqNMFInitializationError
 from gseqnmf.gseqnmf import GseqNMF
+from gseqnmf.support import pad_data
 from tests.conftest import MEANING_OF_LIFE, Dataset
 
 
@@ -35,18 +38,13 @@ class TestGseqNMF:
                 id="random",
             ),
             pytest.param(
-                ["exact"],
-                ("MOCK_PADDED_X", "MOCKED_W_EXACT", "MOCKED_H_EXACT"),
-                id="exact",
-            ),
-            pytest.param(
                 ["nndsvd"],
                 ("MOCK_PADDED_X", "MOCKED_W_NNDSVD", "MOCKED_H_NNDSVD"),
                 id="nndsvd",
             ),
         ],
     )
-    def test_initialization(
+    def test_initialization_methods(
         self, mocker: object, method: str, expected: tuple[str, str, str]
     ) -> None:
         # MOCKING
@@ -70,6 +68,64 @@ class TestGseqNMF:
             random_state=MEANING_OF_LIFE,
         )
         assert (padded_X, W_init, H_init) == expected
+
+    def test_initialize_exact(self) -> None:
+        # noinspection PyTupleAssignmentBalance
+        _, W_init, H_init, _ = GseqNMF._initialize(  # noqa: N806, SLF001
+            X=self.test_dataset.data.copy(),
+            n_components=self.test_dataset.parameters["num_components"],
+            sequence_length=self.test_dataset.parameters["sequence_length"],
+            init="exact",
+            W_init=self.test_dataset.W.copy(),
+            H_init=pad_data(
+                self.test_dataset.H.copy(),
+                self.test_dataset.parameters["sequence_length"],
+            ),
+            random_state=MEANING_OF_LIFE,
+        )
+        np.testing.assert_equal(W_init, self.test_dataset.W)
+        np.testing.assert_equal(
+            H_init,
+            pad_data(
+                self.test_dataset.H.copy(),
+                self.test_dataset.parameters["sequence_length"],
+            ),
+        )
+
+    def test_initialize_exact_failures(self) -> None:
+        with pytest.raises(SeqNMFInitializationError):
+            # noinspection PyTupleAssignmentBalance
+            _ = GseqNMF._initialize(  # noqa: SLF001
+                X=self.test_dataset.data.copy(),
+                n_components=self.test_dataset.parameters["num_components"],
+                sequence_length=self.test_dataset.parameters["sequence_length"],
+                init="exact",
+                W_init=np.zeros((5, 5, 5)),
+                H_init=self.test_dataset.H.copy(),
+                random_state=MEANING_OF_LIFE,
+            )
+        with pytest.raises(SeqNMFInitializationError):
+            # noinspection PyTupleAssignmentBalance
+            _ = GseqNMF._initialize(  # noqa: SLF001
+                X=self.test_dataset.data.copy(),
+                n_components=self.test_dataset.parameters["num_components"],
+                sequence_length=self.test_dataset.parameters["sequence_length"],
+                init="exact",
+                W_init=self.test_dataset.W.copy(),
+                H_init=np.zeros((5, 5)),
+                random_state=MEANING_OF_LIFE,
+            )
+        with pytest.raises(SeqNMFInitializationError):
+            # noinspection PyTupleAssignmentBalance
+            _ = GseqNMF._initialize(  # noqa: SLF001
+                X=self.test_dataset.data.copy(),
+                n_components=self.test_dataset.parameters["num_components"],
+                sequence_length=self.test_dataset.parameters["sequence_length"],
+                init="exact",
+                W_init=None,
+                H_init=None,
+                random_state=MEANING_OF_LIFE,
+            )
 
     def test_initialize_invalid_method(self) -> None:
         with pytest.raises(

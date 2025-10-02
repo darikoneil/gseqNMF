@@ -21,6 +21,7 @@ __all__ = [
     "NDArrayLike",
 ]
 
+
 #: Define a custom type alias `NDArrayLike` to represent a flexible array-like type.
 #: This type can be:
 #: - Any object that satisfies the `ArrayLike` protocol (e.g., lists, tuples, etc.)
@@ -55,6 +56,8 @@ class INIT_METHOD(Enum):  # noqa: N801
     def options() -> list[str]:
         return [m.value for m in INIT_METHOD]
 
+
+# DOC-ME: Write docstring explained each method.
 
 #: Options for initialization methods in the GseqNMF algorithm (Docs/Hints).
 INITIALIZATION_METHODS: type[str] = Literal["random", "exact", "nndsvd"]
