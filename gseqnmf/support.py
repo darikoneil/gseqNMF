@@ -96,7 +96,6 @@ def calculate_loading_power(
                 )
         loadings[k] = (xp.sum(X_unpad**2) - xp.sum((X_unpad - x_hat_k) ** 2)) / denom
     return loadings
-    # TEST: Add tests for calculate_loading_power function in test_support.py
 
 
 def calculate_sequenciness() -> None:
@@ -134,7 +133,6 @@ def reconstruct(
     for idx in range(sequence_length):
         x_hat += xp.dot(W[:, :, idx], xp.roll(H, idx - 1, axis=1))
     return x_hat
-    # TEST: Add tests for reconstruct function in test_support.py
 
 
 def reconstruct_fast(
@@ -182,7 +180,6 @@ def reconstruct_fast(
     h_shifted[:] = xp.swapaxes(H[:, idx], 0, 1)
 
     return xp.tensordot(W, h_shifted, axes=([1, 2], [1, 0]))
-    # TEST: Add tests for reconstruct_fast function in test_support.py
 
 
 def rmse(
@@ -433,4 +430,3 @@ def trans_tensor_convolution(
         wt_x_hat += np.roll(temp_x_hat, shift, axis=1)
     # NOTE: The assignments to temp_x and temp_x_hat are cheap and don't require
     #  pre-allocation
-    # TEST: Add tests for function in test_support.py
