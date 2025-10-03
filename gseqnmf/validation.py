@@ -47,7 +47,7 @@ class INIT_METHOD(Enum):  # noqa: N801
             return INIT_METHOD.RANDOM
         try:
             return INIT_METHOD(value.lower())
-        except ValueError as exc:
+        except (ValueError, AttributeError) as exc:
             msg = f"Unknown initialization method: {value}. "
             msg += f"Available methods are: {INIT_METHOD.options()}"
             raise SeqNMFInitializationError(msg) from exc
@@ -78,8 +78,8 @@ class RECON_METHOD(Enum):  # noqa: N801
         if value is None:
             return RECON_METHOD.FAST
         try:
-            return RECON_METHOD.parse(value.lower())
-        except ValueError as exc:
+            return RECON_METHOD(value.lower())
+        except (ValueError, AttributeError) as exc:
             msg = f"Unknown reconstruction solver: {value}. "
             msg += f"Available solvers are: {RECON_METHOD.options()}"
             raise SeqNMFInitializationError(msg) from exc

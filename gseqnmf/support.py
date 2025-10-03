@@ -46,7 +46,6 @@ def calculate_power(
         x_hat_unpad = x_hat
     denom = xp.sum(X_unpad**2) + epsilon
     return 100 * (xp.sum(X_unpad**2) - xp.sum((X_unpad - x_hat_unpad) ** 2)) / denom
-    # TEST: Add tests for calculate_power function in test_support.py
 
 
 def calculate_loading_power(
@@ -174,14 +173,13 @@ def reconstruct_fast(
 
     if h_shifted is None:
         h_shifted = xp.zeros((sequence_length, n_components, n_samples), dtype=H.dtype)
-    else:
-        h_shifted.fill(0)
+    # else:
+    #     h_shifted.fill(0)
 
     sample_index = xp.arange(n_samples)
     sequence_index = xp.arange(sequence_length)[:, None]
     idx = (sample_index[None, :] - (sequence_index - 1)) % n_samples
-
-    h_shifted += xp.swapaxes(H[:, idx], 0, 1)
+    h_shifted[:] = xp.swapaxes(H[:, idx], 0, 1)
 
     return xp.tensordot(W, h_shifted, axes=([1, 2], [1, 0]))
     # TEST: Add tests for reconstruct_fast function in test_support.py

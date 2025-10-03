@@ -264,14 +264,14 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         """
         n_samples = n_samples + 2 * sequence_length
         cost = np.ones((max_iter + 1, 1)) * np.nan
-        h_shifted = np.zeros((n_features, n_components, n_samples))
-        # BUG: This actually may or may not be needed. Determine how we can
-        #  handle this without making spaghetti.
+        h_shifted = np.zeros((sequence_length, n_components, n_samples))
         x_hat = np.empty((n_features, n_samples))
         xs = np.empty_like(x_hat)
         w_flat = np.empty((n_features, n_components))
         wt_x = np.empty((n_components, n_samples))
         wt_x_hat = np.empty_like(wt_x)
+        # BUG: Some of these actually may or may not be needed. Determine how we can
+        #  handle this to save memory without making spaghetti.
         return {
             "cost": cost,
             "h_shifted": h_shifted,
@@ -341,7 +341,8 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         parameters, such as calculating cost & loadings. In the future, we can
         either use these handles and the associated builder to incorporate dynamic
         implementation of cpu & gpu calls. Bound numpy arrays will still be passed
-        by reference.
+        by reference. We don't call a routine to bind an implementation to the instance
+        because they will not be called outside of fit().
         ================================================================================
         3.) Preallocate arrays to hold intermediate calculations. Most users will be
         memory-bound, so we want to avoid unnecessary allocations. This also helps make
@@ -380,7 +381,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             self.max_iter,
         )
         cost = _arrays["cost"]
-        h_shifted = _arrays["h_shifted"]
+        _h_shifted = _arrays["h_shifted"]
         x_hat = _arrays["x_hat"]
         xs = _arrays["xs"]
         w_flat = _arrays["w_flat"]
@@ -420,8 +421,8 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         IS_FIT = False  # noqa: N806
         # NOTE: We set local_lam to 0 at convergence when the IS_FIT flag is set.
 
-        x_hat.fill(0)
-        x_hat += self.inverse_transform(W, H, h_shifted)
+        # x_hat.fill(0)
+        x_hat[:] = self.inverse_transform(W=W, H=H, h_shifted=_h_shifted)
         cost[0] = cost_func(x_hat=x_hat)
         # NOTE: Initial cost before any updates
 
@@ -437,6 +438,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             ):
                 local_lam = 0
             # NOTE: Convergence & stopping criterion
+            # TODO: We could clean this up by making a small helper function.
 
             trans_tensor_conv_func(W=W, x_hat=x_hat, wt_x=wt_x, wt_x_hat=wt_x_hat)
             #: NOTE: This calculation of Wt⊛X & Wt⊛X̂ is a bottleneck.
@@ -446,6 +448,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
                     local_lam * off_diagonal, conv_func(wt_x)
                 )
                 # NOTE: No need to pre-allocate since subgradients are scalar
+                # OPTIMIZE: Check whether conv_func can be optimized
             else:
                 subgradient_H = 0.0  # noqa: N806
 
@@ -466,14 +469,15 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             for shift in range(self.sequence_length):
                 W[:, :, shift] = np.dot(W[:, :, shift], np.diag(norms))
 
-            x_hat.fill(0)
-            x_hat += self.inverse_transform(W, H, h_shifted)
+            # x_hat.fill(0)
+            x_hat[:] = self.inverse_transform(W=W, H=H, h_shifted=_h_shifted)
 
             if self.lam_W > 0:
-                w_flat = W.sum(axis=2)
+                # w_flat.fill(0)
+                w_flat[:] = W.sum(axis=2)
             if (local_lam > 0) and self.update_W:
-                xs = conv_func(X)
-
+                # xs.fill(0)
+                xs[:] = conv_func(X)
             for shift in range(self.sequence_length):
                 h_shifted = np.roll(H, shift - 1, axis=1)
                 x_ht = np.dot(X, h_shifted.T)
@@ -494,8 +498,8 @@ class GseqNMF(TransformerMixin, BaseEstimator):
 
                 W[:, :, shift] *= np.divide(x_ht, x_hat_ht + subgradient_W + epsilon)
 
-            x_hat.fill(0)
-            x_hat += self.inverse_transform(W, H, h_shifted)
+            # x_hat.fill(0)
+            x_hat[:] = self.inverse_transform(W=W, H=H, h_shifted=_h_shifted)
             cost[iter_] = cost_func(x_hat=x_hat)
             post_fix["cost"] = f"{cost[iter_].item():.4e}"
             pbar.update()

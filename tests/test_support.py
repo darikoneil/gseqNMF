@@ -6,8 +6,194 @@ except ImportError:
     cp = np
 import pytest
 
-from gseqnmf.support import HYPERPARAMETER_LABELS, create_textbar, pad_data, rmse
+from gseqnmf.support import (
+    HYPERPARAMETER_LABELS,
+    calculate_loading_power,
+    calculate_power,
+    create_textbar,
+    pad_data,
+    random_init_H,
+    random_init_W,
+    reconstruct,
+    reconstruct_fast,
+    rmse,
+    shift_factors,
+    trans_tensor_convolution,
+)
 from tests.conftest import BlockPrinting, Dataset
+
+
+class TestCalculatePower:
+    @staticmethod
+    @pytest.mark.parametrize(
+        ("X", "x_hat", "expected_power"),
+        [
+            pytest.param(
+                np.array([[1, 2], [3, 4]]),
+                np.array([[1, 2], [3, 4]]),
+                100.0,
+                id="perfect reconstruction",
+            ),
+            pytest.param(
+                np.array([[1, 2], [3, 4]]),
+                np.array([[0, 0], [0, 0]]),
+                0.0,
+                id="zero reconstruction",
+            ),
+            pytest.param(
+                np.array([[1, 2], [3, 4]]),
+                np.array([[1, 1.5], [2.5, 3.5]]),
+                97.5,
+                id="partial reconstruction",
+            ),
+        ],
+    )
+    def test_calculate_power_returns_correct_percent_power(
+        X: np.ndarray,  # noqa: N803
+        x_hat: np.ndarray,
+        expected_power: np.ndarray,
+    ) -> None:
+        assert calculate_power(X, x_hat) == pytest.approx(expected_power, abs=1e-2)
+
+    @staticmethod
+    @pytest.mark.parametrize(
+        ("X", "x_hat", "padding_index", "expected_power"),
+        [
+            pytest.param(
+                np.array([[1, 2, 3], [4, 5, 6]]),
+                np.array([[1, 2, 3], [4, 5, 6]]),
+                slice(1, 3),
+                100.0,
+                id="perfect reconstruction with padding",
+            ),
+            pytest.param(
+                np.array([[1, 2, 3], [4, 5, 6]]),
+                np.array([[0, 0, 0], [0, 0, 0]]),
+                slice(1, 3),
+                0.0,
+                id="zero reconstruction with padding",
+            ),
+        ],
+    )
+    def test_calculate_power_handles_padding_correctly(
+        X: np.ndarray,  # noqa: N803
+        x_hat: np.ndarray,
+        padding_index: slice,
+        expected_power: float,
+    ) -> None:
+        assert calculate_power(X, x_hat, padding_index=padding_index) == pytest.approx(
+            expected_power, abs=1e-2
+        )
+
+
+class TestCalculateLoadingPower:
+    @staticmethod
+    @pytest.mark.parametrize(
+        ("X", "W", "H", "expected_loadings"),
+        [
+            pytest.param(
+                np.array([[1, 2], [3, 4]]),
+                np.array([[[1, 0], [0, 1]], [[0, 1], [1, 0]]]),
+                np.array([[1, 2], [3, 4]]),
+                np.array([0.5, 0.5]),
+                id="typical case",
+            ),
+            pytest.param(
+                np.zeros((2, 2)),
+                np.zeros((2, 2, 2)),
+                np.zeros((2, 2)),
+                np.array([0.0, 0.0]),
+                id="all zeros",
+            ),
+        ],
+    )
+    def test_calculate_loading_power_computes_correct_loadings(
+        X: np.ndarray,  # noqa: N803
+        W: np.ndarray,  # noqa: N803
+        H: np.ndarray,  # noqa: N803
+        expected_loadings: np.ndarray,
+    ) -> None:
+        loadings = calculate_loading_power(X, W, H)
+        assert np.allclose(loadings, expected_loadings)
+
+
+class TestReconstruct:
+    @staticmethod
+    @pytest.mark.parametrize(
+        ("W", "H", "expected_reconstruction"),
+        [
+            pytest.param(
+                np.array([[[1, 0], [0, 1]], [[0, 1], [1, 0]]]),
+                np.array([[1, 2], [3, 4]]),
+                np.array([[1, 2], [3, 4]]),
+                id="typical case",
+            ),
+            pytest.param(
+                np.zeros((2, 2, 2)),
+                np.zeros((2, 2)),
+                np.zeros((2, 2)),
+                id="all zeros",
+            ),
+        ],
+    )
+    def test_reconstruct_computes_correct_reconstruction(
+        W: np.ndarray,  # noqa: N803
+        H: np.ndarray,  # noqa: N803
+        expected_reconstruction: np.ndarray,
+    ) -> None:
+        reconstruction = reconstruct(W, H)
+        assert np.allclose(reconstruction, expected_reconstruction)
+
+
+class TestReconstructFast:
+    @staticmethod
+    @pytest.mark.parametrize(
+        ("W", "H", "expected_reconstruction"),
+        [
+            pytest.param(
+                np.array([[[1, 0], [0, 1]], [[0, 1], [1, 0]]]),
+                np.array([[1, 2], [3, 4]]),
+                np.array([[1, 2], [3, 4]]),
+                id="typical case",
+            ),
+            pytest.param(
+                np.zeros((2, 2, 2)),
+                np.zeros((2, 2)),
+                np.zeros((2, 2)),
+                id="all zeros",
+            ),
+        ],
+    )
+    def test_reconstruct_fast_computes_correct_reconstruction(
+        W: np.ndarray,  # noqa: N803
+        H: np.ndarray,  # noqa: N803
+        expected_reconstruction: np.ndarray,
+    ) -> None:
+        reconstruction = reconstruct_fast(W, H)
+        assert np.allclose(reconstruction, expected_reconstruction)
+
+
+@pytest.mark.parametrize(
+    ("comparison", "expected"),
+    [
+        pytest.param("exact", 0.0, id="exact match"),
+        pytest.param("off_by_one", 0.00334, id="off by one"),
+        pytest.param("all_off_by_one", 1.0, id="all off by one"),
+    ],
+)
+def test_rmse(test_dataset: Dataset, comparison: str, expected: float) -> None:
+    X = test_dataset.data.copy()  # noqa: N806
+    if comparison == "exact":
+        x_hat = X.copy()
+    elif comparison == "off_by_one":
+        x_hat = X.copy()
+        x_hat[0, 0] += 1
+    elif comparison == "all_off_by_one":
+        x_hat = X.copy() + 1
+    else:
+        msg = "Invalid comparison type"
+        raise ValueError(msg)
+    assert rmse(X, x_hat) == pytest.approx(expected, abs=1e-2)
 
 
 @pytest.mark.parametrize(
@@ -107,24 +293,145 @@ class TestPadData:
         )
 
 
-@pytest.mark.parametrize(
-    ("comparison", "expected"),
-    [
-        pytest.param("exact", 0.0, id="exact match"),
-        pytest.param("off_by_one", 0.00334, id="off by one"),
-        pytest.param("all_off_by_one", 1.0, id="all off by one"),
-    ],
-)
-def test_rmse(test_dataset: Dataset, comparison: str, expected: float) -> None:
-    X = test_dataset.data.copy()  # noqa: N806
-    if comparison == "exact":
-        x_hat = X.copy()
-    elif comparison == "off_by_one":
-        x_hat = X.copy()
-        x_hat[0, 0] += 1
-    elif comparison == "all_off_by_one":
-        x_hat = X.copy() + 1
-    else:
-        msg = "Invalid comparison type"
-        raise ValueError(msg)
-    assert rmse(X, x_hat) == pytest.approx(expected, abs=1e-2)
+class TestRandomInitW:
+    @staticmethod
+    @pytest.mark.parametrize(
+        ("X", "n_components", "sequence_length", "random_state", "expected_shape"),
+        [
+            pytest.param(
+                np.zeros((10, 20)),
+                5,
+                3,
+                None,
+                (10, 5, 3),
+                id="typical case no random state",
+            ),
+            pytest.param(
+                np.ones((15, 25)),
+                4,
+                2,
+                42,
+                (15, 4, 2),
+                id="typical case with random state",
+            ),
+            pytest.param(
+                np.full((8, 12), 7), 3, 1, None, (8, 3, 1), id="single sequence length"
+            ),
+        ],
+    )
+    def test_random_init_W_returns_correct_shape_and_values(  # noqa: N802
+        X: np.ndarray,  # noqa: N803
+        n_components: int,
+        sequence_length: int,
+        random_state: int | None,
+        expected_shape: tuple[int, int, int],
+    ) -> None:
+        W = random_init_W(X, n_components, sequence_length, random_state)  # noqa: N806
+        assert W.shape == expected_shape
+        assert (W >= 0).all()
+        assert (X.max() >= W).all()
+
+    @staticmethod
+    def test_random_init_W_is_deterministic_with_random_state() -> None:  # noqa: N802
+        X = np.ones((10, 20))  # noqa: N806
+        W1 = random_init_W(X, 5, 3, random_state=42)  # noqa: N806
+        W2 = random_init_W(X, 5, 3, random_state=42)  # noqa: N806
+        assert np.array_equal(W1, W2)
+
+
+class TestRandomInitH:
+    @staticmethod
+    @pytest.mark.parametrize(
+        ("X", "n_components", "random_state", "expected_shape"),
+        [
+            pytest.param(
+                np.zeros((10, 20)), 5, None, (5, 20), id="typical case no random state"
+            ),
+            pytest.param(
+                np.ones((15, 25)), 4, 42, (4, 25), id="typical case with random state"
+            ),
+            pytest.param(np.full((8, 12), 7), 3, None, (3, 12), id="filled array"),
+        ],
+    )
+    def test_random_init_H_returns_correct_shape_and_values(  # noqa: N802
+        X: np.ndarray,  # noqa: N803
+        n_components: int,
+        random_state: int | None,
+        expected_shape: tuple[int, int],
+    ) -> None:
+        H = random_init_H(X, n_components, random_state)  # noqa: N806
+        assert H.shape == expected_shape
+        assert (H >= 0).all()
+        assert (X.max() >= H).all()
+
+    @staticmethod
+    def test_random_init_H_is_deterministic_with_random_state() -> None:  # noqa: N802
+        X = np.ones((10, 20))  # noqa: N806
+        H1 = random_init_H(X, 5, random_state=42)  # noqa: N806
+        H2 = random_init_H(X, 5, random_state=42)  # noqa: N806
+        assert np.array_equal(H1, H2)
+
+
+class TestShiftFactors:
+    @staticmethod
+    @pytest.mark.parametrize(
+        ("W", "H", "expected_W", "expected_H"),
+        [
+            pytest.param(
+                np.array([[[1, 0], [0, 1]], [[0, 1], [1, 0]]]),
+                np.array([[1, 2], [3, 4]]),
+                np.array([[[0, 1], [1, 0]], [[1, 0], [0, 1]]]),
+                np.array([[2, 1], [4, 3]]),
+                id="typical case",
+            ),
+        ],
+    )
+    def test_shift_factors_correctly_shifts_and_centers(
+        W: np.ndarray,  # noqa: N803
+        H: np.ndarray,  # noqa: N803
+        expected_W: np.ndarray,  # noqa: N803
+        expected_H: np.ndarray,  # noqa: N803
+    ) -> None:
+        shifted_W, shifted_H = shift_factors(W, H)  # noqa: N806
+        assert np.allclose(shifted_W, expected_W)
+        assert np.allclose(shifted_H, expected_H)
+
+
+class TestTransTensorConvolution:
+    @staticmethod
+    @pytest.mark.parametrize(
+        ("X", "x_hat", "W", "sequence_length", "expected_wt_x", "expected_wt_x_hat"),
+        [
+            pytest.param(
+                np.array([[1, 2], [3, 4]]),
+                np.array([[0, 1], [1, 0]]),
+                np.array([[[1, 0], [0, 1]], [[0, 1], [1, 0]]]),
+                2,
+                np.array([[1, 2], [3, 4]]),
+                np.array([[0, 1], [1, 0]]),
+                id="typical case",
+            ),
+            pytest.param(
+                np.zeros((2, 2)),
+                np.zeros((2, 2)),
+                np.zeros((2, 2, 2)),
+                2,
+                np.zeros((2, 2)),
+                np.zeros((2, 2)),
+                id="all zeros",
+            ),
+        ],
+    )
+    def test_trans_tensor_convolution_computes_correct_outputs(
+        X: np.ndarray,  # noqa: N803
+        x_hat: np.ndarray,
+        W: np.ndarray,  # noqa: N803
+        sequence_length: int,
+        expected_wt_x: np.ndarray,
+        expected_wt_x_hat: np.ndarray,
+    ) -> None:
+        wt_x = np.zeros_like(expected_wt_x)
+        wt_x_hat = np.zeros_like(expected_wt_x_hat)
+        trans_tensor_convolution(X, x_hat, W, wt_x, wt_x_hat, sequence_length)
+        assert np.allclose(wt_x, expected_wt_x)
+        assert np.allclose(wt_x_hat, expected_wt_x_hat)
