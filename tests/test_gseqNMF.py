@@ -10,8 +10,8 @@ from tests.conftest import MEANING_OF_LIFE, Dataset
 
 class TestGseqNMF:
     @pytest.fixture(autouse=True)
-    def _setup(self, test_dataset: Dataset) -> None:
-        self.test_dataset = test_dataset
+    def _setup(self, example_dataset: Dataset) -> None:
+        self.test_dataset = example_dataset
         self.model = GseqNMF(
             n_components=self.test_dataset.parameters["num_components"],
             sequence_length=self.test_dataset.parameters["sequence_length"],
@@ -190,6 +190,7 @@ class TestGseqNMF:
         with pytest.raises(AttributeError):
             self.model.set_params(invalid_param="Don't Panic!")
 
-    @pytest.mark.skip
-    def test_extended(self) -> None:
-        self.model.fit(self.test_dataset.data.copy())
+    def test_fitting(self) -> None:
+        self.model.fit(self.test_dataset.data.T.copy())
+        assert self.model.power_ >= self.test_dataset.power
+        assert self.model.cost_[-1] <= self.test_dataset.cost[-1]

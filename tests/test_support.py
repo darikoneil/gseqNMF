@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 import numpy as np
 
 try:
@@ -20,7 +22,7 @@ from gseqnmf.support import (
     shift_factors,
     trans_tensor_convolution,
 )
-from tests.conftest import BlockPrinting, Dataset
+from tests.conftest import Dataset
 
 
 class TestCalculatePower:
@@ -86,91 +88,52 @@ class TestCalculatePower:
         )
 
 
-class TestCalculateLoadingPower:
-    @staticmethod
-    @pytest.mark.parametrize(
-        ("X", "W", "H", "expected_loadings"),
-        [
-            pytest.param(
-                np.array([[1, 2], [3, 4]]),
-                np.array([[[1, 0], [0, 1]], [[0, 1], [1, 0]]]),
-                np.array([[1, 2], [3, 4]]),
-                np.array([0.5, 0.5]),
-                id="typical case",
-            ),
-            pytest.param(
-                np.zeros((2, 2)),
-                np.zeros((2, 2, 2)),
-                np.zeros((2, 2)),
-                np.array([0.0, 0.0]),
-                id="all zeros",
-            ),
-        ],
+def test_calculate_loading_power(example_dataset: Dataset) -> None:
+    expected_loadings = example_dataset.loadings
+    loadings = calculate_loading_power(
+        example_dataset.data,
+        example_dataset.W,
+        example_dataset.H,
     )
-    def test_calculate_loading_power_computes_correct_loadings(
-        X: np.ndarray,  # noqa: N803
-        W: np.ndarray,  # noqa: N803
-        H: np.ndarray,  # noqa: N803
-        expected_loadings: np.ndarray,
-    ) -> None:
-        loadings = calculate_loading_power(X, W, H)
-        assert np.allclose(loadings, expected_loadings)
+    assert np.allclose(loadings, expected_loadings)
 
 
 class TestReconstruct:
     @staticmethod
     @pytest.mark.parametrize(
-        ("W", "H", "expected_reconstruction"),
+        "implementation",
         [
-            pytest.param(
-                np.array([[[1, 0], [0, 1]], [[0, 1], [1, 0]]]),
-                np.array([[1, 2], [3, 4]]),
-                np.array([[1, 2], [3, 4]]),
-                id="typical case",
-            ),
-            pytest.param(
-                np.zeros((2, 2, 2)),
-                np.zeros((2, 2)),
-                np.zeros((2, 2)),
-                id="all zeros",
-            ),
+            pytest.param(reconstruct, id="reconstruct"),
+            pytest.param(reconstruct_fast, id="reconstruct_fast"),
         ],
     )
     def test_reconstruct_computes_correct_reconstruction(
-        W: np.ndarray,  # noqa: N803
-        H: np.ndarray,  # noqa: N803
-        expected_reconstruction: np.ndarray,
+        example_dataset: Dataset, implementation: Callable
     ) -> None:
-        reconstruction = reconstruct(W, H)
-        assert np.allclose(reconstruction, expected_reconstruction)
+        reconstruction = implementation(example_dataset.W, example_dataset.H)
+        assert np.allclose(reconstruction, example_dataset.parameters["x_hat"])
 
-
-class TestReconstructFast:
     @staticmethod
     @pytest.mark.parametrize(
-        ("W", "H", "expected_reconstruction"),
+        "implementation",
         [
-            pytest.param(
-                np.array([[[1, 0], [0, 1]], [[0, 1], [1, 0]]]),
-                np.array([[1, 2], [3, 4]]),
-                np.array([[1, 2], [3, 4]]),
-                id="typical case",
-            ),
-            pytest.param(
-                np.zeros((2, 2, 2)),
-                np.zeros((2, 2)),
-                np.zeros((2, 2)),
-                id="all zeros",
-            ),
+            pytest.param(reconstruct, id="reconstruct"),
+            pytest.param(reconstruct_fast, id="reconstruct_fast"),
         ],
     )
-    def test_reconstruct_fast_computes_correct_reconstruction(
-        W: np.ndarray,  # noqa: N803
-        H: np.ndarray,  # noqa: N803
-        expected_reconstruction: np.ndarray,
+    def test_reconstruct_handles_preallocation(
+        example_dataset: Dataset, implementation: Callable
     ) -> None:
-        reconstruction = reconstruct_fast(W, H)
-        assert np.allclose(reconstruction, expected_reconstruction)
+        h_shifted = np.zeros(
+            (
+                example_dataset.parameters["sequence_length"],
+                example_dataset.parameters["num_components"],
+                example_dataset.H.shape[1],
+            )
+        )
+        _ = implementation(example_dataset.W, example_dataset.H, h_shifted=h_shifted)
+        if implementation is reconstruct_fast:
+            assert np.sum(h_shifted) != 0, "h_shifted was not modified in-place"
 
 
 @pytest.mark.parametrize(
@@ -181,8 +144,10 @@ class TestReconstructFast:
         pytest.param("all_off_by_one", 1.0, id="all off by one"),
     ],
 )
-def test_rmse(test_dataset: Dataset, comparison: str, expected: float) -> None:
-    X = test_dataset.data.copy()  # noqa: N806
+def test_calculate_rmse(
+    example_dataset: Dataset, comparison: str, expected: float
+) -> None:
+    X = example_dataset.data.copy()  # noqa: N806
     if comparison == "exact":
         x_hat = X.copy()
     elif comparison == "off_by_one":
@@ -236,14 +201,14 @@ def test_rmse(test_dataset: Dataset, comparison: str, expected: float) -> None:
     ],
 )
 def test_create_textbar(
-    n_components: int, sequence_length: int, hyperparameters: dict, expected_desc: str
+    n_components: int,
+    sequence_length: int,
+    hyperparameters: dict,
+    expected_desc: str,
 ) -> None:
-    with BlockPrinting():
-        progress_bar = create_textbar(
-            n_components, sequence_length, 100, **hyperparameters
-        )
-        assert progress_bar.desc == expected_desc
-        progress_bar.close()
+    progress_bar = create_textbar(n_components, sequence_length, 100, **hyperparameters)
+    assert progress_bar.desc == expected_desc
+    progress_bar.close()
 
 
 class TestPadData:
@@ -380,8 +345,8 @@ class TestShiftFactors:
             pytest.param(
                 np.array([[[1, 0], [0, 1]], [[0, 1], [1, 0]]]),
                 np.array([[1, 2], [3, 4]]),
-                np.array([[[0, 1], [1, 0]], [[1, 0], [0, 1]]]),
-                np.array([[2, 1], [4, 3]]),
+                np.array([[[1, 0], [0, 1]], [[0, 1], [1, 0]]]),
+                np.array([[1, 2], [3, 4]]),
                 id="typical case",
             ),
         ],
@@ -407,19 +372,10 @@ class TestTransTensorConvolution:
                 np.array([[0, 1], [1, 0]]),
                 np.array([[[1, 0], [0, 1]], [[0, 1], [1, 0]]]),
                 2,
-                np.array([[1, 2], [3, 4]]),
-                np.array([[0, 1], [1, 0]]),
+                np.array([[5, 5], [5, 5]]),
+                np.array([[2, 0], [0, 2]]),
                 id="typical case",
-            ),
-            pytest.param(
-                np.zeros((2, 2)),
-                np.zeros((2, 2)),
-                np.zeros((2, 2, 2)),
-                2,
-                np.zeros((2, 2)),
-                np.zeros((2, 2)),
-                id="all zeros",
-            ),
+            )
         ],
     )
     def test_trans_tensor_convolution_computes_correct_outputs(

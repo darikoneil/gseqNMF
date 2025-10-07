@@ -1,12 +1,19 @@
 import sys
-from os import devnull
+from os import devnull, environ
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
 
-MEANING_OF_LIFE: int = 42  # The answer to life, the universe, and everything
+#: The answer to life, the universe, and everything
+MEANING_OF_LIFE: int = 42
+
+#: Disable Numba JIT during tests for consistency and easier debugging
+environ["NUMBA_DISABLE_JIT"] = "1"
+
+#: Disable tqdm progress bars during tests
+# environ["TQDM_DISABLE"] = "True"
 
 
 class BlockPrinting:
@@ -51,6 +58,13 @@ class Dataset:
         self.loadings: np.ndarray = loadings
         self.power: np.ndarray = power
         self.parameters: dict[str, Any] = kwargs
+        for param, value in kwargs.items():
+            if isinstance(value, np.ndarray) and value.shape == ():
+                self.parameters[param] = value.item()
+        # HACK: Sklearn's validation checks fall for single element numpy arrays
+        #  This is a temporary fix until we can assess whether we need to modify
+        #  the parameter constraints or whether it's a bug in the storage of the test
+        #  dataset.
 
     @classmethod
     def load(cls, name: str) -> "Dataset":
@@ -62,6 +76,11 @@ class Dataset:
         return cls(name, **dataset)
 
 
-@pytest.fixture(scope="class")
-def test_dataset() -> Dataset:
+@pytest.fixture(scope="session")
+def example_dataset() -> Dataset:
+    """
+    Fixture that loads a pre-computed test dataset.
+
+    :return: Dataset object with test data and parameters.
+    """
     return Dataset.load("example_dataset")
