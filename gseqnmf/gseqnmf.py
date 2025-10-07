@@ -12,6 +12,7 @@ from gseqnmf.exceptions import SeqNMFInitializationError
 from gseqnmf.support import (
     calculate_loading_power,
     calculate_power,
+    check_convergence,
     create_textbar,
     nndsvd_init,
     pad_data,
@@ -21,6 +22,7 @@ from gseqnmf.support import (
     reconstruct_fast,
     rmse,
     shift_factors,
+    sort_indices,
     trans_tensor_convolution,
 )
 from gseqnmf.validation import (
@@ -388,6 +390,10 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         wt_x = _arrays["wt_x"]
         wt_x_hat = _arrays["wt_x_hat"]
 
+        x_hat[:] = self.inverse_transform(W=W, H=H, h_shifted=_h_shifted)
+        cost[0] = cost_func(x_hat=x_hat)
+        # NOTE: Initial cost before any updates
+
         post_fix = {"cost": "N/A"}
         textbar = create_textbar(
             self.n_components,
@@ -399,7 +405,6 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             lam_H=self.lam_H,
             lam_W=self.lam_W,
         )
-
         pbar = tqdm(
             range(self.max_iter),
             total=self.max_iter,
@@ -407,38 +412,20 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             unit="iter",
             initial=0,
             colour="#6dff9b",
-            # mininterval=0.25,
             postfix=post_fix,
             position=0,
-            # delay=1e-10,
         )
-        # BUG: tqdm bar sometimes rendering text only last
-        #  or many reprints of progress  bar
-
         epsilon = np.max(X) * 1e-6
         off_diagonal = 1 - np.eye(self.n_components)
         local_lam = self.lam
-        IS_FIT = False  # noqa: N806
-        # NOTE: We set local_lam to 0 at convergence when the IS_FIT flag is set.
-
-        # x_hat.fill(0)
-        x_hat[:] = self.inverse_transform(W=W, H=H, h_shifted=_h_shifted)
-        cost[0] = cost_func(x_hat=x_hat)
-        # NOTE: Initial cost before any updates
-
         for iter_ in range(1, self.max_iter + 1):
-            if (
-                IS_FIT := (  # noqa: N806
-                    (iter_ == self.max_iter)
-                    or (
-                        (iter_ > 5)
-                        and (np.nanmean(cost[iter_ - 5 : -1]) - cost[-1] < self.tol)
-                    )
-                )
+            if IS_FIT := check_convergence(  # noqa: N806
+                iteration=iter_, max_iter=self.max_iter, cost_vector=cost, tol=self.tol
             ):
                 local_lam = 0
-            # NOTE: Convergence & stopping criterion
-            # TODO: We could clean this up by making a small helper function.
+                # NOTE: We set local_lam to 0 at convergence when the IS_FIT flag is
+                #  set. The final iteration will complete the updates with no
+                #  cross-factor regularization.
 
             trans_tensor_conv_func(W=W, x_hat=x_hat, wt_x=wt_x, wt_x_hat=wt_x_hat)
             #: NOTE: This calculation of Wt⊛X & Wt⊛X̂ is a bottleneck.
@@ -469,7 +456,6 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             for shift in range(self.sequence_length):
                 W[:, :, shift] = np.dot(W[:, :, shift], np.diag(norms))
 
-            # x_hat.fill(0)
             x_hat[:] = self.inverse_transform(W=W, H=H, h_shifted=_h_shifted)
 
             if self.lam_W > 0:
@@ -498,7 +484,6 @@ class GseqNMF(TransformerMixin, BaseEstimator):
 
                 W[:, :, shift] *= np.divide(x_ht, x_hat_ht + subgradient_W + epsilon)
 
-            # x_hat.fill(0)
             x_hat[:] = self.inverse_transform(W=W, H=H, h_shifted=_h_shifted)
             cost[iter_] = cost_func(x_hat=x_hat)
             post_fix["cost"] = f"{cost[iter_].item():.4e}"
@@ -508,6 +493,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             if IS_FIT:
                 break
 
+        # NOTE: Make sure to close the progress bars to avoid display issues.
         pbar.close()
         textbar.close()
 
@@ -518,10 +504,9 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         self.power_ = power_func(x_hat=x_hat)
 
         if self.sort:
-            sorting_indices = np.flip(np.argsort(self.loadings_), 0)
-            self.W_ = self.W_[:, sorting_indices, :]
-            self.H_ = self.H_[sorting_indices, :]
-            self.loadings_ = self.loadings_[sorting_indices]
+            self.W_, self.H_, self.loadings_ = sort_indices(
+                self.W_, self.H_, self.loadings_
+            )
 
         self._is_fitted = True
 
@@ -624,9 +609,9 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         )
         match recon:
             case RECON_METHOD.NORMAL:
-                self._inverse_transform = partial(reconstruct)
+                self._inverse_transform = reconstruct
             case RECON_METHOD.FAST:
-                self._inverse_transform = partial(reconstruct_fast)
+                self._inverse_transform = reconstruct_fast
             case _:
                 # noinspection PyUnreachableCode
                 msg = (

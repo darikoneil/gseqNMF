@@ -223,6 +223,34 @@ HYPERPARAMETER_LABELS: dict[str, str] = {
 }
 
 
+#: Number of iterations to consider for smoothing the cost function when checking
+#: for convergence.
+COST_SMOOTHING_WINDOW: int = 5
+
+
+def check_convergence(
+    iteration: int,
+    max_iter: int,
+    tol: float,
+    cost_vector: NDArrayLike,
+) -> bool:
+    """
+    Check for convergence based on the change in cost function.
+
+    :param iteration: Current iteration number.
+    :param max_iter: Maximum number of iterations.
+    :param tol: Tolerance for convergence.
+    :param cost_vector: Array of cost values from previous iterations.
+    :return: True if converged, False otherwise.
+    """
+    if iteration == max_iter:
+        return True
+    return bool(
+        iteration > COST_SMOOTHING_WINDOW
+        and np.nanmean(cost_vector[iteration - 5 : -1]) - cost_vector[-1] < tol
+    )
+
+
 def create_textbar(
     n_components: int,
     sequence_length: int,
@@ -259,6 +287,26 @@ def create_textbar(
         desc=desc,
         position=1,
     )
+
+
+def sort_indices(
+    W: NDArrayLike,  # noqa: N803
+    H: NDArrayLike,  # noqa: N803
+    loadings: NDArrayLike,
+) -> tuple[NDArrayLike, NDArrayLike, NDArrayLike]:
+    """
+    Sort components based on their loadings in descending order.
+
+    :param W: Basis matrix (n_features x n_components x sequence_length).
+    :param H: Coefficient matrix (n_components x n_samples).
+    :param loadings: Array of loadings for each component.
+    :return: Tuple of sorted (W, H, loadings).
+    """
+    sorting_indices = np.flip(np.argsort(loadings), 0)
+    W = W[:, sorting_indices, :]  # noqa: N806
+    H = H[sorting_indices, :]  # noqa: N806
+    loadings = loadings[sorting_indices]
+    return W, H, loadings
 
 
 def shift_factors(
