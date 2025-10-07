@@ -8,8 +8,12 @@ from sklearn.utils._param_validation import Interval, StrOptions
 
 from gseqnmf.exceptions import SeqNMFInitializationError
 
+CUPY_INSTALLED: bool = False
+
 try:
     import cupy as cp
+
+    CUPY_INSTALLED: bool = True
 except ImportError:  # pragma: no cover
     cp = None  # pragma: no cover
 
@@ -113,3 +117,37 @@ PARAMETER_CONSTRAINTS: dict[str, list] = {
     "recon": [StrOptions(set(RECON_METHOD.options())), RECON_METHOD, None],
     "random_state": [int, None],
 }
+
+
+def cuda_available()  -> bool:
+    """Check if a CUDA-capable GPU is available for CuPy.
+
+    Returns
+    -------
+    bool
+        True if a CUDA-capable GPU is available, False otherwise.
+    """
+    if not CUPY_INSTALLED:
+        return False
+    # noinspection PyBroadException
+    try:
+        return cp.cuda.is_available()
+    except Exception:  # pragma: no cover  # noqa: BLE001
+        return False
+
+
+def device_available() -> bool:
+    """Check if a GPU device is available for CuPy.
+
+    Returns
+    -------
+    bool
+        True if a GPU device is available, False otherwise.
+    """
+    if not CUPY_INSTALLED:
+        return False
+    # noinspection PyBroadException
+    try:
+        return cp.cuda.runtime.getDeviceCount() > 0
+    except Exception:  # noqa: BLE001
+        return False

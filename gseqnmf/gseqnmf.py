@@ -8,7 +8,11 @@ from sklearn.base import BaseEstimator, TransformerMixin, _fit_context
 from sklearn.utils.validation import check_is_fitted
 from tqdm import tqdm
 
-from gseqnmf.exceptions import SeqNMFInitializationError
+from gseqnmf.exceptions import (
+    GPUNotAvailableError,
+    GPUNotSupportedError,
+    SeqNMFInitializationError,
+)
 from gseqnmf.support import (
     calculate_loading_power,
     calculate_power,
@@ -26,11 +30,14 @@ from gseqnmf.support import (
     trans_tensor_convolution,
 )
 from gseqnmf.validation import (
+    CUPY_INSTALLED,
     INIT_METHOD,
     INITIALIZATION_METHODS,
     PARAMETER_CONSTRAINTS,
     RECON_METHOD,
     RECONSTRUCTION_METHODS,
+    cuda_available,
+    device_available,
 )
 
 __all__ = [
@@ -67,6 +74,8 @@ class GseqNMF(TransformerMixin, BaseEstimator):
     :param update_W: Whether to update W during fitting.
     :param init: Initialization method for W and H.
     :param random_state: Random seed for reproducibility.
+    :param recon: Reconstruction method.
+    :param use_gpu: Whether to use GPU acceleration.
 
     :ivar  n_features_in_: Number of features in the input data.
     :ivar  n_samples_in_: Number of samples in the input data.
@@ -97,6 +106,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         init: INITIALIZATION_METHODS | INIT_METHOD = INIT_METHOD.RANDOM,
         recon: RECONSTRUCTION_METHODS | RECON_METHOD = RECON_METHOD.FAST,
         random_state: int | None = None,
+        use_gpu: bool = False,
     ):
         self.n_components: int = n_components
         self.sequence_length: int = sequence_length
@@ -113,6 +123,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         self.init: INITIALIZATION_METHODS | INIT_METHOD = init
         self.recon: RECONSTRUCTION_METHODS | RECON_METHOD = recon
         self.random_state: int | None = random_state
+        self.use_gpu: bool = use_gpu
         ###########################################
         self._is_fitted: bool = False
         # NOTE: This is an  sklearn flag to indicate if the model has been fitted.
@@ -125,7 +136,10 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         self.power_ = None
         self._validate_params()
         # NOTE: This is sklearn's internal validation routine that leverages the
-        #   class attribute _parameter_constraints attribute defined above.
+        #   class attribute _parameter_constraints attribute defined above. Note, it
+        #   does not validate the use_gpu parameter.
+        if use_gpu:
+            self._validate_gpu()
         ############################################
         self._set_recon_method()
 
@@ -295,6 +309,18 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         msg = "This method should be set in _set_recon_method."
         raise NotImplementedError(msg)
 
+    @staticmethod
+    def _validate_gpu() -> None:
+        """
+        Validate that GPU support is available.
+
+        :raises NotImplementedError: If GPU support is not available.
+        """
+        if not CUPY_INSTALLED:
+            raise GPUNotSupportedError
+        if not cuda_available() or not device_available():
+            raise GPUNotAvailableError
+
     @_fit_context(prefer_skip_nested_validation=True)
     def fit(
         self,
@@ -328,9 +354,9 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         #   contiguous array for performance in the underlying routines.
         # OPTIMIZE: We could add a check or flag here to short circuit this step.
         # OPTIMIZE: We could rework some of the math to avoid O(n) space complexity,
-        #  but we'd need to check how that impacts cache locality. If we were offloading
-        #  to a GPU, I think it O(1) for RAM since we don't need to actually enforce
-        #  CPU contiguity in that case.
+        #  but we'd need to check how that impacts cache locality. If we were
+        #  offloading to a GPU, I think it's O(1) for RAM since we don't need to
+        #  actually enforce CPU contiguity in that case (I think).
 
         """
         ================================================================================
@@ -390,7 +416,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         wt_x = _arrays["wt_x"]
         wt_x_hat = _arrays["wt_x_hat"]
 
-        x_hat[:] = self.inverse_transform(W=W, H=H, h_shifted=_h_shifted)
+        x_hat[:] = self._inverse_transform(W=W, H=H, h_shifted=_h_shifted)
         cost[0] = cost_func(x_hat=x_hat)
         # NOTE: Initial cost before any updates
 
@@ -456,7 +482,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             for shift in range(self.sequence_length):
                 W[:, :, shift] = np.dot(W[:, :, shift], np.diag(norms))
 
-            x_hat[:] = self.inverse_transform(W=W, H=H, h_shifted=_h_shifted)
+            x_hat[:] = self._inverse_transform(W=W, H=H, h_shifted=_h_shifted)
 
             if self.lam_W > 0:
                 # w_flat.fill(0)
@@ -484,7 +510,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
 
                 W[:, :, shift] *= np.divide(x_ht, x_hat_ht + subgradient_W + epsilon)
 
-            x_hat[:] = self.inverse_transform(W=W, H=H, h_shifted=_h_shifted)
+            x_hat[:] = self._inverse_transform(W=W, H=H, h_shifted=_h_shifted)
             cost[iter_] = cost_func(x_hat=x_hat)
             post_fix["cost"] = f"{cost[iter_].item():.4e}"
             pbar.update()
@@ -498,7 +524,8 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         textbar.close()
 
         self.W_ = W
-        self.H_ = H
+        self.H_ = H[:, self.sequence_length : -self.sequence_length]
+        # NOTE: We trim the padding off H to match the original data dimensions.
         self.cost_ = cost
         self.loadings_ = loading_func(W=W, H=H)
         self.power_ = power_func(x_hat=x_hat)
@@ -555,12 +582,14 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         :param X: Input data matrix.
         :param W: Initial W matrix.
         :param H: Initial H matrix.
-
-        :returns: Transformed data (usually H matrix).
-
-        :raises NotImplementedError: This method is not yet implemented.
+        :returns: Transformed data (H)
         """
-        raise NotImplementedError
+        # WARN: If we call fit_transform we DON'T want sklearn to automatically call
+        #  fit followed by transform. The result with be more accurate if we call fit
+        #  and then return H DIRECTLY rather than calling fit with a fixed W. It also
+        #  avoids having to essentially fit twice.
+        self.fit(X=X, W_init=W, H_init=H)
+        return self.H_
 
     # noinspection PyUnusedLocal
     def transform(self, X: np.ndarray) -> np.ndarray:  # noqa: ARG002, N803
@@ -591,8 +620,11 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         :param h_shifted: Pre-shifted H matrix (only used in certain implementations).
         :returns: Reconstructed data matrix.
         """
+        # NOTE: Call the _inverse_transform method during internal calls to avoid
+        #  premature checking of fitted status.
         W = W if W is not None else self.W_  # noqa: N806
         H = H if H is not None else self.H_  # noqa: N806
+        check_is_fitted(self)
         return self._inverse_transform(W=W, H=H, h_shifted=h_shifted)
 
     def _set_recon_method(self) -> None:

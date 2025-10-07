@@ -1,6 +1,7 @@
 # noqa: N999
 import numpy as np
 import pytest
+from sklearn.exceptions import NotFittedError
 
 from gseqnmf.exceptions import SeqNMFInitializationError
 from gseqnmf.gseqnmf import GseqNMF
@@ -194,3 +195,22 @@ class TestGseqNMF:
         self.model.fit(self.test_dataset.data.T.copy())
         assert self.model.power_ >= self.test_dataset.power
         assert self.model.cost_[-1] <= self.test_dataset.cost[-1]
+
+    def test_fit_transform(self) -> None:
+        H = self.model.fit_transform(self.test_dataset.data.T.copy())  # noqa: N806
+        np.testing.assert_allclose(H, self.model.H_)
+        assert self.model.power_ >= self.test_dataset.power
+        assert self.model.cost_[-1] <= self.test_dataset.cost[-1]
+        assert H.shape == (
+            self.test_dataset.parameters["num_components"],
+            self.test_dataset.data.shape[1],
+        )
+
+    def test_transform(self) -> None:
+        self.model.fit(self.test_dataset.data.T.copy())
+        with pytest.raises(NotImplementedError):
+            _ = self.model.transform(self.test_dataset.data.T.copy())
+
+    def test_transform_premature_call(self) -> None:
+        with pytest.raises(NotFittedError):
+            self.model.transform(self.test_dataset.data.T.copy())

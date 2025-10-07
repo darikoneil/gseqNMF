@@ -98,7 +98,7 @@ vis = [
     "PyQt6",
 ]
 dev = [
-    "gseqNMF[cuda12]",
+    #"gseqNMF[cuda12]",
     "gseqNMF[test]",
     "gseqNMF[lint]",
     "gseqNMF[cov]",
