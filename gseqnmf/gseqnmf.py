@@ -660,7 +660,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
 
         :returns: Dictionary of tag names mapped to tag values.
         """
-        return {"stateless": False}
+        return {"stateless": False}  # pragma: no cover
 
     def __sklearn_is_fitted__(self) -> bool:
         """

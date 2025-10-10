@@ -419,14 +419,11 @@ def nndsvd_init(
     :param random_state: Optional random seed.
     :return: Not implemented.
     """
-    print(
-        f"NNDSVD initialization is not implemented yet; "
-        f"{X}, "
-        f"{n_components}, "
-        f"{sequence_length}, "
-        f"{random_state=}"
+    msg = (
+        f"NNDSVD initialization is not implemented yet; {X}, "
+        f"{n_components}, {sequence_length}, {random_state=}"
     )
-    return
+    raise NotImplementedError(msg)
     # DOC-ME: Add docstring for nndsvd_init function
     # TODO: Implement the NNDSVD initialization algorithm.
     # TEST: Add tests for nndsvd_init function in test_support.py

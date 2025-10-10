@@ -214,3 +214,15 @@ class TestGseqNMF:
     def test_transform_premature_call(self) -> None:
         with pytest.raises(NotFittedError):
             self.model.transform(self.test_dataset.data.T.copy())
+
+    def test_inverse_transform_premature_call(self) -> None:
+        with pytest.raises(NotFittedError):
+            self.model.inverse_transform(
+                self.test_dataset.W.copy(), self.test_dataset.H.copy()
+            )
+
+    def test_inner_inverse_transform_premature_call(self) -> None:
+        with pytest.raises(NotImplementedError):
+            GseqNMF._inverse_transform(  # noqa: SLF001
+                self.test_dataset.W.copy(), self.test_dataset.H.copy(), None
+            )

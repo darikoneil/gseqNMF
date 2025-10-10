@@ -13,6 +13,7 @@ from gseqnmf.support import (
     calculate_loading_power,
     calculate_power,
     create_textbar,
+    nndsvd_init,
     pad_data,
     random_init_H,
     random_init_W,
@@ -391,3 +392,10 @@ class TestTransTensorConvolution:
         trans_tensor_convolution(X, x_hat, W, wt_x, wt_x_hat, sequence_length)
         assert np.allclose(wt_x, expected_wt_x)
         assert np.allclose(wt_x_hat, expected_wt_x_hat)
+
+
+class TestNNSVDInit:
+    @staticmethod
+    def test_not_implemented() -> None:
+        with pytest.raises(NotImplementedError):
+            _ = nndsvd_init(np.zeros((10, 20)), 5, 100)

@@ -16,6 +16,9 @@ try:
     CUPY_INSTALLED: bool = True
 except ImportError:  # pragma: no cover
     cp = None  # pragma: no cover
+else:
+    from cupy.cuda import is_available as cuda_is_available
+    from cupy.cuda.runtime import getDeviceCount
 
 
 __all__ = [
@@ -119,7 +122,7 @@ PARAMETER_CONSTRAINTS: dict[str, list] = {
 }
 
 
-def cuda_available()  -> bool:
+def cuda_available() -> bool:
     """Check if a CUDA-capable GPU is available for CuPy.
 
     Returns
@@ -131,7 +134,7 @@ def cuda_available()  -> bool:
         return False
     # noinspection PyBroadException
     try:
-        return cp.cuda.is_available()
+        return cuda_is_available()
     except Exception:  # pragma: no cover  # noqa: BLE001
         return False
 
@@ -148,6 +151,6 @@ def device_available() -> bool:
         return False
     # noinspection PyBroadException
     try:
-        return cp.cuda.runtime.getDeviceCount() > 0
-    except Exception:  # noqa: BLE001
+        return getDeviceCount() > 0
+    except Exception:  # noqa: BLE001 # pragma: no cover
         return False
