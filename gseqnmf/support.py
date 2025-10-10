@@ -1,4 +1,5 @@
 import warnings
+from collections.abc import Callable
 from types import ModuleType
 
 import numpy as np
@@ -243,6 +244,44 @@ HYPERPARAMETER_LABELS: dict[str, str] = {
 COST_SMOOTHING_WINDOW: int = 5
 
 
+def calculate_subgradient_H(  # noqa: N802
+    H: NDArrayLike,  # noqa: N803
+    wt_x: NDArrayLike,
+    local_lam: float,
+    off_diagonal: NDArrayLike,
+    lam_H: float,  # noqa: N803
+    alpha_H: float,  # noqa: N803
+    conv_handle: Callable,
+) -> float:
+    """
+    Calculate subgradient for H.
+
+    :param H: H matrix (n_components x n_samples).
+    :param wt_x: W⊤ ⊛ X (n_components x n_samples).
+    :param local_lam: local lambda value.
+    :param off_diagonal: Off-diagonal elements of H H⊤.
+    :param lam_H: lambda for H.
+    :param alpha_H: L1 penaltyfor H.
+    :param conv_handle: Convolution function handle.
+    :return: subgradient for H
+    """  # noqa: RUF002
+    # REVIEW: No need to pre-allocate since subgradients are scalar
+    subgradient_H = np.dot(  # noqa: N806
+            local_lam * off_diagonal, conv_handle(wt_x)
+        ) if local_lam > 0.0 else 0.0
+    events_penalty = (
+            np.dot(
+                lam_H * off_diagonal, conv_handle(H)
+            )
+            if lam_H > 0.0
+            else 0.0
+        )
+    subgradient_H += alpha_H + events_penalty  # noqa: N806
+    return subgradient_H
+
+# TODO: Break apart the subgradient calculation into smaller functions
+
+
 def check_convergence(
     iteration: int,
     max_iter: int,
@@ -442,6 +481,28 @@ def nndsvd_init(
     # DOC-ME: Add docstring for nndsvd_init function
     # TODO: Implement the NNDSVD initialization algorithm.
     # TEST: Add tests for nndsvd_init function in test_support.py
+
+
+def renormalize(
+    W: NDArrayLike,  # noqa: N803
+    H: NDArrayLike,  # noqa: N803
+    sequence_length: int,
+    epsilon: float = np.finfo(float).eps,
+) -> None:
+    """
+    Renormalize W and H so that each component in H has unit norm.
+
+    :param W:
+    :param H:
+    :param sequence_length:
+    :param epsilon:
+    :return: None. W and H are modified in place.
+    """
+    norms = np.sqrt(np.sum(np.power(H, 2), axis=1)).T
+    H[:] = np.dot(np.diag(np.divide(1.0, norms + epsilon)), H)
+    for shift in range(sequence_length):
+        W[:, :, shift] = np.dot(W[:, :, shift], np.diag(norms))
+    # NOTE: The norms calculation is cheap and doesn't require pre-allocation
 
 
 def trans_tensor_convolution(

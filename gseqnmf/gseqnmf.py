@@ -16,6 +16,7 @@ from gseqnmf.exceptions import (
 from gseqnmf.support import (
     calculate_loading_power,
     calculate_power,
+    calculate_subgradient_H,
     check_convergence,
     create_textbar,
     nndsvd_init,
@@ -24,6 +25,7 @@ from gseqnmf.support import (
     random_init_W,
     reconstruct,
     reconstruct_fast,
+    renormalize,
     rmse,
     shift_factors,
     sort_indices,
@@ -36,6 +38,7 @@ from gseqnmf.validation import (
     PARAMETER_CONSTRAINTS,
     RECON_METHOD,
     RECONSTRUCTION_METHODS,
+    NDArrayLike,
     cuda_available,
     device_available,
 )
@@ -107,6 +110,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         recon: RECONSTRUCTION_METHODS | RECON_METHOD = RECON_METHOD.FAST,
         random_state: int | None = None,
         use_gpu: bool = False,
+        fixed_W: bool = False,  # noqa: N803
     ):
         self.n_components: int = n_components
         self.sequence_length: int = sequence_length
@@ -124,6 +128,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         self.recon: RECONSTRUCTION_METHODS | RECON_METHOD = recon
         self.random_state: int | None = random_state
         self.use_gpu: bool = use_gpu
+        self.fixed_W: bool = fixed_W
         ###########################################
         self._is_fitted: bool = False
         # NOTE: This is an  sklearn flag to indicate if the model has been fitted.
@@ -225,8 +230,14 @@ class GseqNMF(TransformerMixin, BaseEstimator):
 
     @staticmethod
     def _prep_handles(
-        padded_X: np.ndarray,  # noqa: N803
+        padded_X: NDArrayLike,  # noqa: N803
         sequence_length: int,
+        off_diagonal: NDArrayLike,
+        # lam_W: float = 0.0,
+        # alpha_W: float = 0.0,
+        lam_H: float = 0.0,  # noqa: N803
+        alpha_H: float = 0.0,  # noqa: N803
+        epsilon: float = np.finfo(float).eps,
     ) -> dict[str, Callable]:
         """
         Prepare function handles for repeated calculations.
@@ -251,12 +262,24 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         tensor_func = partial(
             trans_tensor_convolution, X=padded_X, sequence_length=sequence_length
         )
+        norm_func = partial(
+            renormalize, sequence_length=sequence_length, epsilon=epsilon
+        )
+        subgrad_H_func = partial(  # noqa: N806
+            calculate_subgradient_H,
+            off_diagonal=off_diagonal,
+            conv_handle=conv_func,
+            lam_H=lam_H,
+            alpha_H=alpha_H,
+        )
         return {
             "cost": cost_func,
             "loading": loading_func,
             "power": power_func,
             "conv": conv_func,
             "tensor": tensor_func,
+            "norm": norm_func,
+            "subgrad_H": subgrad_H_func,
         }
 
     @staticmethod
@@ -324,10 +347,10 @@ class GseqNMF(TransformerMixin, BaseEstimator):
     @_fit_context(prefer_skip_nested_validation=True)
     def fit(
         self,
-        X: np.ndarray,  # noqa: N803
-        y: np.ndarray | None = None,
-        W_init: np.ndarray | None = None,  # noqa: N803
-        H_init: np.ndarray | None = None,  # noqa: N803
+        X: NDArrayLike,  # noqa: N803
+        y: NDArrayLike | None = None,
+        W_init: NDArrayLike | None = None,  # noqa: N803
+        H_init: NDArrayLike | None = None,  # noqa: N803
     ) -> "GseqNMF":
         """
         Fit the seqNMF model to the data ``X``.
@@ -383,6 +406,12 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         cost, loadings, and power.
         ================================================================================
         """
+
+        # TODO: Make documentation for the steps of fitting
+
+        # TODO: make a _fit method that is called by fit to allow the same method to be
+        #  called by transform. Otherwise, have trasnform call fit with fixed W?
+
         X, W, H, self.init = self._initialize(  # noqa: N806
             X=X,
             n_components=self.n_components,
@@ -394,12 +423,26 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         # REVIEW: It might be cleaner to separate the initialization of W and H,
         #  the padding of X, and/or the dispatching logic for the initialization method.
 
-        _handles = self._prep_handles(X, self.sequence_length)
+        epsilon = np.max(X) * 1e-6
+        off_diagonal = 1 - np.eye(self.n_components)
+
+        _handles = self._prep_handles(
+            X,
+            self.sequence_length,
+            off_diagonal=off_diagonal,
+            # lam_W=self.lam_W,
+            # alpha_W=self.alpha_W,
+            lam_H=self.lam_H,
+            alpha_H=self.alpha_H,
+            epsilon=epsilon,
+        )
         cost_func = _handles["cost"]
         loading_func = _handles["loading"]
         power_func = _handles["power"]
         conv_func = _handles["conv"]
         trans_tensor_conv_func = _handles["tensor"]
+        norm_func = _handles["norm"]
+        subgrad_H_func = _handles["subgrad_H"]  # noqa: N806
 
         _arrays = self._preallocate(
             self.n_features_in,
@@ -441,8 +484,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             postfix=post_fix,
             position=0,
         )
-        epsilon = np.max(X) * 1e-6
-        off_diagonal = 1 - np.eye(self.n_components)
+
         local_lam = self.lam
         for iter_ in range(1, self.max_iter + 1):
             if IS_FIT := check_convergence(  # noqa: N806
@@ -456,20 +498,12 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             trans_tensor_conv_func(W=W, x_hat=x_hat, wt_x=wt_x, wt_x_hat=wt_x_hat)
             #: NOTE: This calculation of Wt⊛X & Wt⊛X̂ is a bottleneck.
 
-            if local_lam > 0:
-                subgradient_H = np.dot(  # noqa: N806
-                    local_lam * off_diagonal, conv_func(wt_x)
-                )
-                # NOTE: No need to pre-allocate since subgradients are scalar
-                # OPTIMIZE: Check whether conv_func can be optimized
-            else:
-                subgradient_H = 0.0  # noqa: N806
-
-            if self.lam_H > 0:
-                dHHdH = np.dot(self.lam_H * off_diagonal, conv_func(H))  # noqa: N806
-            else:
-                dHHdH = 0.0  # noqa: N806
-            subgradient_H += self.alpha_H + dHHdH  # noqa: N806
+            subgradient_H = subgrad_H_func(
+                H=H,
+                wt_x=wt_x,
+                local_lam=local_lam,
+            )
+            # OPTIMIZE: Check whether the conv_func can be optimized
 
             H *= np.divide(wt_x, wt_x_hat + subgradient_H + epsilon)  # noqa: N806
 
@@ -477,38 +511,38 @@ class GseqNMF(TransformerMixin, BaseEstimator):
                 W, H = shift_factors(W, H)  # noqa: N806
                 W += epsilon  # noqa: N806
 
-            norms = np.sqrt(np.sum(np.power(H, 2), axis=1)).T
-            H = np.dot(np.diag(np.divide(1.0, norms + epsilon)), H)  # noqa: N806
-            for shift in range(self.sequence_length):
-                W[:, :, shift] = np.dot(W[:, :, shift], np.diag(norms))
+            norm_func(W=W, H=H)
 
             x_hat[:] = self._inverse_transform(W=W, H=H, h_shifted=_h_shifted)
 
-            if self.lam_W > 0:
-                # w_flat.fill(0)
-                w_flat[:] = W.sum(axis=2)
-            if (local_lam > 0) and self.update_W:
-                # xs.fill(0)
-                xs[:] = conv_func(X)
-            for shift in range(self.sequence_length):
-                h_shifted = np.roll(H, shift - 1, axis=1)
-                x_ht = np.dot(X, h_shifted.T)
-                x_hat_ht = np.dot(x_hat, h_shifted.T)
-
-                if (local_lam > 0) and self.update_W:
-                    subgradient_W = np.dot(  # noqa: N806
-                        local_lam * np.dot(xs, h_shifted.T), off_diagonal
-                    )
-                else:
-                    subgradient_W = 0.0  # noqa: N806
-
+            if not self.fixed_W:
                 if self.lam_W > 0:
-                    dWWdW = np.dot(self.lam_W * w_flat, off_diagonal)  # noqa: N806
-                else:
-                    dWWdW = 0.0  # noqa: N806
-                subgradient_W += self.alpha_W + dWWdW  # noqa: N806
+                    w_flat[:] = W.sum(axis=2)
+                if (local_lam > 0) and self.update_W:
+                    xs[:] = conv_func(X)
 
-                W[:, :, shift] *= np.divide(x_ht, x_hat_ht + subgradient_W + epsilon)
+                for shift in range(self.sequence_length):
+                    h_shifted = np.roll(H, shift - 1, axis=1)
+                    x_ht = np.dot(X, h_shifted.T)
+                    x_hat_ht = np.dot(x_hat, h_shifted.T)
+
+                    if (local_lam > 0) and self.update_W:
+                        subgradient_W = np.dot(  # noqa: N806
+                            local_lam * np.dot(xs, h_shifted.T), off_diagonal
+                        )
+                    else:
+                        subgradient_W = 0.0  # noqa: N806
+
+                    if self.lam_W > 0:
+                        dWWdW = np.dot(self.lam_W * w_flat, off_diagonal)  # noqa: N806
+                    else:
+                        dWWdW = 0.0  # noqa: N806
+                    subgradient_W += self.alpha_W + dWWdW  # noqa: N806
+
+                    W[:, :, shift] *= np.divide(
+                        x_ht, x_hat_ht + subgradient_W + epsilon
+                    )
+            # TODO: Encapsulate me into a function
 
             x_hat[:] = self._inverse_transform(W=W, H=H, h_shifted=_h_shifted)
             cost[iter_] = cost_func(x_hat=x_hat)
@@ -519,9 +553,9 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             if IS_FIT:
                 break
 
-        # NOTE: Make sure to close the progress bars to avoid display issues.
         pbar.close()
         textbar.close()
+        # NOTE: Make sure to close the progress bars to avoid display issues.
 
         self.W_ = W
         self.H_ = H[:, self.sequence_length : -self.sequence_length]
