@@ -33,3 +33,11 @@ class GPUNotSupportedError(ImportError):
             "installed"
         )
         super().__init__(self.message)
+
+
+class InvalidGPUDeviceError(ValueError):
+    """Exception raised when an invalid GPU device ID is specified."""
+
+    def __init__(self, device_id: int) -> None:
+        self.message = f"Invalid GPU device ID specified: {device_id}"
+        super().__init__(self.message)

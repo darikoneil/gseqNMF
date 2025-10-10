@@ -12,6 +12,7 @@ from gseqnmf.validation import (
     RECON_METHOD,
     cuda_available,
     device_available,
+    is_valid_device,
 )
 
 
@@ -152,3 +153,27 @@ class TestGPUValidation:
         with pytest.raises(GPUNotAvailableError):
             GseqNMF(n_components=10, sequence_length=100, use_gpu=True)
         gseqnmf.gseqnmf.CUPY_INSTALLED = True
+
+    @staticmethod
+    def test_gpu_valid_device(mocker: object) -> None:
+        gseqnmf.validation.CUPY_INSTALLED = True
+        mock_device_count = mocker.patch("gseqnmf.validation.getDeviceCount")
+        mock_device_count.return_value = 2
+        assert gseqnmf.validation.is_valid_device(0) is True
+        assert gseqnmf.validation.is_valid_device(1) is True
+        gseqnmf.validation.CUPY_INSTALLED = True
+
+    @staticmethod
+    def test_gpu_invalid_device(mocker: object) -> None:
+        gseqnmf.validation.CUPY_INSTALLED = True
+        mock_device_count = mocker.patch("gseqnmf.validation.getDeviceCount")
+        mock_device_count.return_value = 2
+        assert gseqnmf.validation.is_valid_device(2) is False
+        assert gseqnmf.validation.is_valid_device(-1) is False
+        gseqnmf.validation.CUPY_INSTALLED = True
+
+    @staticmethod
+    def test_gpu_valid_device_no_cupy() -> None:
+        gseqnmf.validation.CUPY_INSTALLED = False
+        assert is_valid_device(0) is False
+        gseqnmf.validation.CUPY_INSTALLED = True

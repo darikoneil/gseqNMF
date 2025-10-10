@@ -6,7 +6,9 @@ import numpy as np
 from numpy.typing import ArrayLike
 from sklearn.utils._param_validation import Interval, StrOptions
 
-from gseqnmf.exceptions import SeqNMFInitializationError
+from gseqnmf.exceptions import (
+    SeqNMFInitializationError,
+)
 
 CUPY_INSTALLED: bool = False
 
@@ -123,12 +125,12 @@ PARAMETER_CONSTRAINTS: dict[str, list] = {
 
 
 def cuda_available() -> bool:
-    """Check if a CUDA-capable GPU is available for CuPy.
+    """
+    Check if a CUDA-capable GPU is available for CuPy.
 
-    Returns
-    -------
-    bool
-        True if a CUDA-capable GPU is available, False otherwise.
+    :raises GPUNotSupported:
+        If CuPy is not installed.
+    :return: True if a CUDA is available, False otherwise.
     """
     if not CUPY_INSTALLED:
         return False
@@ -140,12 +142,12 @@ def cuda_available() -> bool:
 
 
 def device_available() -> bool:
-    """Check if a GPU device is available for CuPy.
+    """
+    Check if a GPU device is available for CuPy.
 
-    Returns
-    -------
-    bool
-        True if a GPU device is available, False otherwise.
+    :raises GPUNotAvailable:
+        If CuPy is installed but no GPU device is available.
+    :return: True if a GPU device is available, False otherwise.
     """
     if not CUPY_INSTALLED:
         return False
@@ -154,3 +156,15 @@ def device_available() -> bool:
         return getDeviceCount() > 0
     except Exception:  # noqa: BLE001 # pragma: no cover
         return False
+
+
+def is_valid_device(device_id: int = 0) -> bool:
+    """
+    Check if the specified GPU device ID is valid.
+
+    :param device_id: The ID of the GPU device to check (default is 0).
+    :return: True if the device ID is valid, False otherwise.
+    """
+    if not CUPY_INSTALLED:
+        return False
+    return 0 <= device_id < getDeviceCount()

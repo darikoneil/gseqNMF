@@ -4,7 +4,22 @@ from types import ModuleType
 import numpy as np
 from tqdm import tqdm
 
-from gseqnmf.validation import NDArrayLike
+from gseqnmf.exceptions import (
+    GPUNotAvailableError,
+    GPUNotSupportedError,
+    InvalidGPUDeviceError,
+)
+from gseqnmf.validation import (
+    CUPY_INSTALLED,
+    NDArrayLike,
+    device_available,
+    is_valid_device,
+)
+
+if CUPY_INSTALLED:
+    from cupy.cuda import Device
+else:
+    Device = None  # pragma: no cover
 
 __all__ = [
     "calculate_loading_power",
@@ -475,3 +490,43 @@ def trans_tensor_convolution(
         wt_x_hat += np.roll(temp_x_hat, shift, axis=1)
     # NOTE: The assignments to temp_x and temp_x_hat are cheap and don't require
     #  pre-allocation
+
+
+def assess_vram(device_id: int = 0) -> tuple[float, float]:
+    """
+    Assess the free & total VRAM of the specified GPU device.
+
+    :param device_id: The ID of the GPU device to assess (default is 0).
+    :raises GPUNotSupportedError: If CuPy is not installed.
+    :raises GPUNotAvailableError: If no GPU device is available.
+    :raises InvalidGPUDeviceError: If the specified device ID is invalid.
+    :return: A tuple containing the free and total VRAM in gigabytes (GB).
+    """
+    if not CUPY_INSTALLED:
+        raise GPUNotSupportedError
+    if not device_available():
+        raise GPUNotAvailableError
+    if not is_valid_device(device_id):
+        raise InvalidGPUDeviceError(device_id)
+    mem_info = Device(device_id).mem_info()
+    free_mem = mem_info[0] / (1024**3)
+    total_mem = mem_info[1] / (1024**3)
+    return free_mem, total_mem
+
+
+def set_device(device_id: int = 0) -> None:
+    """
+    Set the active GPU device for CuPy operations.
+
+    :param device_id: The ID of the GPU device to set (default is 0).
+    :raises GPUNotSupportedError: If CuPy is not installed.
+    :raises GPUNotAvailableError: If no GPU device is available.
+    :raises InvalidGPUDeviceError: If the specified device ID is invalid.
+    """
+    if not CUPY_INSTALLED:
+        raise GPUNotSupportedError
+    if not device_available():
+        raise GPUNotAvailableError
+    if not is_valid_device(device_id):
+        raise InvalidGPUDeviceError(device_id)
+    Device(device_id).use()

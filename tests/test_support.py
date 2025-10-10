@@ -2,6 +2,13 @@ from collections.abc import Callable
 
 import numpy as np
 
+import gseqnmf.support
+from gseqnmf.exceptions import (
+    GPUNotAvailableError,
+    GPUNotSupportedError,
+    InvalidGPUDeviceError,
+)
+
 try:
     import cupy as cp
 except ImportError:
@@ -10,8 +17,10 @@ import pytest
 
 from gseqnmf.support import (
     HYPERPARAMETER_LABELS,
+    assess_vram,
     calculate_loading_power,
     calculate_power,
+    calculate_sequenciness,
     create_textbar,
     nndsvd_init,
     pad_data,
@@ -20,6 +29,7 @@ from gseqnmf.support import (
     reconstruct,
     reconstruct_fast,
     rmse,
+    set_device,
     shift_factors,
     trans_tensor_convolution,
 )
@@ -399,3 +409,116 @@ class TestNNSVDInit:
     def test_not_implemented() -> None:
         with pytest.raises(NotImplementedError):
             _ = nndsvd_init(np.zeros((10, 20)), 5, 100)
+
+
+class TestGPUUtilities:
+    @staticmethod
+    def test_set_device(mocker: object) -> None:
+        class MockDevice:
+            def __init__(self, device_id: int) -> None:
+                self.device_id = device_id
+
+            def use(self, device_id: int) -> None:
+                self.device_id = device_id
+
+            def __enter__(self) -> int:
+                return self.device_id
+
+            def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # noqa: ANN001
+                pass
+
+        mock_set_device = mocker.patch("gseqnmf.support.Device")
+        mocker.patch.object(MockDevice, "use")
+        mock_set_device.return_value = MockDevice(0)
+        set_device(0)
+        mock_set_device.assert_called_once_with(0)
+
+    @staticmethod
+    def test_set_device_invalid(mocker: object) -> None:
+        class MockDevice:
+            def __init__(self, device_id: int) -> None:
+                self.device_id = device_id
+
+            def use(self, device_id: int) -> None:
+                self.device_id = device_id
+
+            def __enter__(self) -> int:
+                return self.device_id
+
+            def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # noqa: ANN001
+                pass
+
+        mock_set_device = mocker.patch("gseqnmf.support.Device")
+        mocker.patch.object(MockDevice, "use")
+        mock_set_device.return_value = MockDevice(0)
+        with pytest.raises(InvalidGPUDeviceError):
+            set_device(-1)
+
+    @staticmethod
+    def test_set_device_no_cupy() -> None:
+        gseqnmf.support.CUPY_INSTALLED = False
+        with pytest.raises(GPUNotSupportedError):
+            set_device(0)
+        gseqnmf.support.CUPY_INSTALLED = True
+
+    @staticmethod
+    def test_no_device_available(mocker: object) -> None:
+        mock_set_device = mocker.patch("gseqnmf.support.device_available")
+        mock_set_device.return_value = False
+        gseqnmf.support.CUPY_INSTALLED = True
+        with pytest.raises(GPUNotAvailableError):
+            set_device(0)
+        gseqnmf.support.CUPY_INSTALLED = True
+
+    @staticmethod
+    def test_assess_vram(mocker: object) -> None:
+        class MockDevice:
+            def __init__(self, device_id: int) -> None:
+                self.device_id = device_id
+
+            # noinspection PyMethodMayBeStatic
+            def mem_info(self) -> tuple[float, float]:
+                return 4 * 1024**3, 8 * 1024**3
+
+            def __enter__(self) -> int:
+                return self.device_id
+
+            def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # noqa: ANN001
+                pass
+
+        mock_set_device = mocker.patch("gseqnmf.support.Device")
+        mock_set_device.return_value = MockDevice(0)
+        vram = assess_vram(0)
+        np.testing.assert_allclose(np.asarray(vram), np.array([4.0, 8.0]))
+
+    @staticmethod
+    def test_assess_vram_no_cupy() -> None:
+        gseqnmf.support.CUPY_INSTALLED = False
+        with pytest.raises(GPUNotSupportedError):
+            _ = assess_vram(0)
+        gseqnmf.support.CUPY_INSTALLED = True
+
+    @staticmethod
+    def test_assess_vram_no_device(mocker: object) -> None:
+        gseqnmf.support.CUPY_INSTALLED = True
+        mocker_patch = mocker.patch("gseqnmf.support.device_available")
+        mocker_patch.return_value = False
+        with pytest.raises(GPUNotAvailableError):
+            _ = assess_vram(0)
+        gseqnmf.support.CUPY_INSTALLED = True
+
+    @staticmethod
+    def test_assess_vram_invalid_device(mocker: object) -> None:
+        gseqnmf.support.CUPY_INSTALLED = True
+        mocker_patch = mocker.patch("gseqnmf.support.is_valid_device")
+        mocker_patch.return_value = False
+        with pytest.raises(InvalidGPUDeviceError):
+            _ = assess_vram(0)
+        gseqnmf.support.CUPY_INSTALLED = True
+
+
+class TestSequenciness:
+    @staticmethod
+    def test_not_implemented_sequenciness() -> None:
+        with pytest.raises(NotImplementedError):
+            calculate_sequenciness()

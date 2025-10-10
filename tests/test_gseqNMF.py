@@ -226,3 +226,9 @@ class TestGseqNMF:
             GseqNMF._inverse_transform(  # noqa: SLF001
                 self.test_dataset.W.copy(), self.test_dataset.H.copy(), None
             )
+
+    def test_warn_y(self) -> None:
+        with pytest.warns(UserWarning, match="y*None"):
+            self.model.fit(self.test_dataset.data.T.copy(), y=np.zeros((42,)))
+        # NOTE: This calls the full fit again, but that's fine. We want to make sure
+        #  that the warning is raised but the model is still fitted.
