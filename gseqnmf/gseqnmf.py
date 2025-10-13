@@ -128,7 +128,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         self.W_update: W_UPDATE_METHODS | W_UPDATE_METHOD = W_UPDATE_METHOD.parse(
             W_update
         )
-        self.init: INITIALIZATION_METHODS | INIT_METHOD = init
+        self.init: INITIALIZATION_METHODS | INIT_METHOD = INIT_METHOD.parse(init)
         self.recon: RECONSTRUCTION_METHODS | RECON_METHOD = recon
         self.random_state: int | None = random_state
         self.use_gpu: bool = use_gpu
@@ -156,11 +156,12 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         X: np.ndarray,  # noqa: N803
         n_components: int,
         sequence_length: int,
-        init: INITIALIZATION_METHODS | INIT_METHOD,
+        init: INIT_METHOD,
+        W_update: W_UPDATE_METHOD,  # noqa: N803
         W_init: np.ndarray | None = None,  # noqa: N803
         H_init: np.ndarray | None = None,  # noqa: N803
         random_state: int | None = None,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, INIT_METHOD]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Initialize W and H matrices based on the specified method.
 
@@ -168,6 +169,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         :param n_components: Number of components.
         :param sequence_length: Length of the sequences.
         :param init: Initialization method ('random', 'exact', 'nndsvd').
+        :param W_update: Whether W is being updated.
         :param W_init: Initial W matrix for 'exact' initialization.
         :param H_init: Initial H matrix for 'exact' initialization.
         :param random_state: Random seed for reproducibility.
@@ -175,15 +177,12 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         """
 
         padded_X = pad_data(X, sequence_length)  # noqa: N806
-        init = (
-            INIT_METHOD.EXACT
-            if np.any([factor is not None for factor in [W_init, H_init]])
-            else INIT_METHOD.parse(init)
-        )
         match init:
             case INIT_METHOD.RANDOM:
-                W_init = random_init_W(  # noqa: N806
-                    padded_X, n_components, sequence_length, random_state
+                W_init = (
+                    random_init_W(padded_X, n_components, sequence_length, random_state)
+                    if W_update.value != W_UPDATE_METHOD.FIXED.value
+                    else W_init
                 )
                 H_init = random_init_H(  # noqa: N806
                     padded_X,
@@ -221,15 +220,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
                     n_components,
                     sequence_length,
                 )
-            case _:
-                # noinspection PyUnreachableCode
-                msg = (
-                    f"Invalid init method: {init}. Choose from {INIT_METHOD.options()}."
-                )
-                # noinspection PyUnreachableCode
-                raise SeqNMFInitializationError(msg)
-
-        return padded_X, W_init, H_init, init
+        return padded_X, W_init, H_init
 
     @staticmethod
     def _prep_handles(
@@ -459,7 +450,6 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             X=X,
             W=self.W_,
             H=self.H_,
-            # HACK: Spaghetti to force W to be fixed during transform.
             W_update=W_UPDATE_METHOD.FIXED,
         )
         return H
@@ -493,16 +483,27 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         W: NDArrayLike | None = None,  # noqa: N803
         H: NDArrayLike | None = None,  # noqa: N803
     ) -> tuple[NDArrayLike, NDArrayLike, NDArrayLike, NDArrayLike, float]:
+        """
+        Core fitting routine for seqNMF.
+        :param X: Input data matrix.
+        :param W: Initial W matrix.
+        :param W_update: Whether W is being updated.
+        :param H: Initial H matrix.
+        :return: Tuple of (W, H, cost, loadings, power).
+        """
         self.n_samples_in, self.n_features_in = X.shape
 
         X = np.ascontiguousarray(X.T)  # noqa: N806
         # NOTE: sklearn convention is (n_samples, n_features). We transpose and enforce
         #   contiguous array for performance in the underlying routines.
-        # OPTIMIZE: We could add a check or flag here to short circuit this step.
+        # OPTIMIZE: We could add some sort of flag here to short circuit this step?
         # OPTIMIZE: We could rework some of the math to avoid O(n) space complexity,
         #  but we'd need to check how that impacts cache locality. If we were
         #  offloading to a GPU, I think it's O(1) for RAM since we don't need to
-        #  actually enforce CPU contiguity in that case (I think).
+        #  actually enforce CPU contiguity in that case (I think)? Maybe there's
+        #  some transient memory explosion on the GPU when we do this, but worst case
+        #  we could always transfer in chunks. We probably want to do that anyway since
+        #  VRAM is more limited.
 
         """
         ================================================================================
@@ -512,44 +513,43 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         matched to the padded data matrix, NOT the original data matrix.
         ================================================================================
         2.) Make function handles for functions requiring repeated calls with fixed
-        parameters, such as calculating cost & loadings. In the future, we can
+        parameters, such as calculating cost & loadings. We can
         either use these handles and the associated builder to incorporate dynamic
-        implementation of cpu & gpu calls. Bound numpy arrays will still be passed
-        by reference. We don't call a routine to bind an implementation to the instance
-        because they will not be called outside of fit().
+        implementation of cpu & gpu calls. Bound cupy/numpy arrays will still be passed
+        as references in the bytecode, so we don't need to worry about sub-optimal
+        spatial complexity. We don't call a routine to bind an implementation for these
+        specific to the instance so that the memory is reliably released after fitting.
+        Alternatively, we could have bound this with the arguments as weak
+        references/proxies, but I think this is better encapsulated this way. We also
+        don't bind the handles to the instance (i.e. self._cost_func) because I don't
+        want to deal with per-parameter re-binding for every set_params call.
         ================================================================================
         3.) Preallocate arrays to hold intermediate calculations. Most users will be
-        memory-bound, so we want to avoid unnecessary allocations. This also helps make
-        sure that any out of memory errors are caught as early as possible.
+        memory-bound, so we want to avoid unnecessary allocations. Some of these
+        obviously improve performance, but the main goal is to avoid ungraceful
+        failure due to memory exhaustion.
         ================================================================================
         4.) Solve by iteratively calling regularized multiplicative updates
-        until convergence or reaching the maximum number of iterations.
-        ================================================================================
-        5.) After fitting, store the final W and H matrices, as well as the training
-        cost, loadings, and power.
+        until convergence or the maximum number of iterations.
         ================================================================================
         """
-        # TODO: Make documentation for the steps of fitting
-
-        # HACK: Temporary spaghetti to handle the fact that we need to fix W when using
-        #  transform(). We could probably make this cleaner.
-        # REVIEW: It might be cleaner to separate the initialization of W and H,
-        #  the padding of X, and/or the dispatching logic for the initialization method.
         if W_update.value == W_UPDATE_METHOD.FIXED.value:
-            X, _, H, self.init = self._initialize(  # noqa: N806
+            X, _, H = self._initialize(  # noqa: N806
                 X=X,
                 n_components=self.n_components,
                 sequence_length=self.sequence_length,
                 init=INIT_METHOD.RANDOM,
+                W_update=W_update,
                 W_init=W,
                 H_init=H,
             )
         else:
-            X, W, H, self.init = self._initialize(  # noqa: N806
+            X, W, H = self._initialize(  # noqa: N806
                 X=X,
                 n_components=self.n_components,
                 sequence_length=self.sequence_length,
                 init=self.init,
+                W_update=W_update,
                 W_init=W,
                 H_init=H,
             )

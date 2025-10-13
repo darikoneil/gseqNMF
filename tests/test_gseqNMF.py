@@ -6,6 +6,7 @@ from sklearn.exceptions import NotFittedError
 from gseqnmf.exceptions import SeqNMFInitializationError
 from gseqnmf.gseqnmf import GseqNMF
 from gseqnmf.support import pad_data
+from gseqnmf.validation import INIT_METHOD, W_UPDATE_METHOD
 from tests.conftest import MEANING_OF_LIFE, Dataset
 
 
@@ -17,7 +18,7 @@ class TestGseqNMF:
             n_components=self.test_dataset.parameters["num_components"],
             sequence_length=self.test_dataset.parameters["sequence_length"],
             max_iter=self.test_dataset.parameters["max_iter"],
-            init="random",
+            init=INIT_METHOD.EXACT,
             random_state=MEANING_OF_LIFE,
         )
 
@@ -34,12 +35,12 @@ class TestGseqNMF:
         ("method", "expected"),
         [
             pytest.param(
-                ["random"],
+                [INIT_METHOD.RANDOM],
                 ("MOCK_PADDED_X", "MOCKED_W_RANDOM", "MOCKED_H_RANDOM"),
                 id="random",
             ),
             pytest.param(
-                ["nndsvd"],
+                [INIT_METHOD.NNDSVD],
                 ("MOCK_PADDED_X", "MOCKED_W_NNDSVD", "MOCKED_H_NNDSVD"),
                 id="nndsvd",
             ),
@@ -59,24 +60,26 @@ class TestGseqNMF:
         nndsvd_nonneg_mock.return_value = expected[1:]
 
         # noinspection PyTupleAssignmentBalance
-        padded_X, W_init, H_init, _ = GseqNMF._initialize(  # noqa: N806, SLF001
+        padded_X, W_init, H_init = GseqNMF._initialize(  # noqa: N806, SLF001
             X=self.test_dataset.data.copy(),
             n_components=self.test_dataset.parameters["num_components"],
             sequence_length=self.test_dataset.parameters["sequence_length"],
             init=method[0],
-            W_init="MOCKED_W_EXACT" if method[0] == "exact" else None,
-            H_init="MOCKED_H_EXACT" if method[0] == "exact" else None,
+            W_update=W_UPDATE_METHOD.FULL,
+            W_init=None,
+            H_init=None,
             random_state=MEANING_OF_LIFE,
         )
         assert (padded_X, W_init, H_init) == expected
 
     def test_initialize_exact(self) -> None:
         # noinspection PyTupleAssignmentBalance
-        _, W_init, H_init, _ = GseqNMF._initialize(  # noqa: N806, SLF001
+        _, W_init, H_init = GseqNMF._initialize(  # noqa: N806, SLF001
             X=self.test_dataset.data.copy(),
             n_components=self.test_dataset.parameters["num_components"],
             sequence_length=self.test_dataset.parameters["sequence_length"],
-            init="exact",
+            init=INIT_METHOD.EXACT,
+            W_update=W_UPDATE_METHOD.FULL,
             W_init=self.test_dataset.W.copy(),
             H_init=pad_data(
                 self.test_dataset.H.copy(),
@@ -100,7 +103,8 @@ class TestGseqNMF:
                 X=self.test_dataset.data.copy(),
                 n_components=self.test_dataset.parameters["num_components"],
                 sequence_length=self.test_dataset.parameters["sequence_length"],
-                init="exact",
+                init=INIT_METHOD.EXACT,
+                W_update=W_UPDATE_METHOD.FULL,
                 W_init=np.zeros((5, 5, 5)),
                 H_init=self.test_dataset.H.copy(),
                 random_state=MEANING_OF_LIFE,
@@ -111,7 +115,8 @@ class TestGseqNMF:
                 X=self.test_dataset.data.copy(),
                 n_components=self.test_dataset.parameters["num_components"],
                 sequence_length=self.test_dataset.parameters["sequence_length"],
-                init="exact",
+                init=INIT_METHOD.EXACT,
+                W_update=W_UPDATE_METHOD.FULL,
                 W_init=self.test_dataset.W.copy(),
                 H_init=np.zeros((5, 5)),
                 random_state=MEANING_OF_LIFE,
@@ -122,21 +127,10 @@ class TestGseqNMF:
                 X=self.test_dataset.data.copy(),
                 n_components=self.test_dataset.parameters["num_components"],
                 sequence_length=self.test_dataset.parameters["sequence_length"],
-                init="exact",
+                init=INIT_METHOD.EXACT,
+                W_update=W_UPDATE_METHOD.FULL,
                 W_init=None,
                 H_init=None,
-                random_state=MEANING_OF_LIFE,
-            )
-
-    def test_initialize_invalid_method(self) -> None:
-        with pytest.raises(
-            SeqNMFInitializationError,
-        ):
-            GseqNMF._initialize(  # noqa: SLF001
-                X=self.test_dataset.data.copy(),
-                n_components=self.test_dataset.parameters["num_components"],
-                sequence_length=self.test_dataset.parameters["sequence_length"],
-                init="invalid",
                 random_state=MEANING_OF_LIFE,
             )
 
@@ -192,12 +186,20 @@ class TestGseqNMF:
             self.model.set_params(invalid_param="Don't Panic!")
 
     def test_fitting(self) -> None:
-        self.model.fit(self.test_dataset.data.T.copy())
+        self.model.fit(
+            self.test_dataset.data.T.copy(),
+            W=self.test_dataset.parameters["W_init"].copy(),
+            H=self.test_dataset.parameters["H_init"].copy(),
+        )
         assert self.model.power_ >= self.test_dataset.power
         assert self.model.cost_[-1] <= self.test_dataset.cost[-1]
 
     def test_fit_transform(self) -> None:
-        H = self.model.fit_transform(self.test_dataset.data.T.copy())  # noqa: N806
+        H = self.model.fit_transform(  # noqa: N806
+            self.test_dataset.data.T.copy(),
+            self.test_dataset.parameters["W_init"].copy(),
+            self.test_dataset.parameters["H_init"].copy(),
+        )
         np.testing.assert_allclose(H, self.model.H_)
         assert self.model.power_ >= self.test_dataset.power
         assert self.model.cost_[-1] <= self.test_dataset.cost[-1]
@@ -207,9 +209,26 @@ class TestGseqNMF:
         )
 
     def test_transform(self) -> None:
-        self.model.fit(self.test_dataset.data.T.copy())
-        with pytest.raises(NotImplementedError):
-            _ = self.model.transform(self.test_dataset.data.T.copy())
+        self.model.fit(
+            self.test_dataset.data.T.copy(),
+            W=self.test_dataset.parameters["W_init"].copy(),
+            H=self.test_dataset.parameters["H_init"].copy(),
+        )
+        H_transformed = self.model.transform(  # noqa: N806
+            self.test_dataset.data.T.copy()
+        )
+        assert (
+            np.max(
+                np.abs(
+                    np.round(H_transformed, decimals=2)
+                    - np.round(self.model.H_, decimals=2)
+                )
+            )
+            <= 2e-2
+        )
+        # NOTE: The tolerance is a bit high, but this is expected since
+        #  a lone transform step is not as accurate as the full fit in the source code.
+        #  Maybe in the future we can understand how to improve this.
 
     def test_transform_premature_call(self) -> None:
         with pytest.raises(NotFittedError):
@@ -229,6 +248,11 @@ class TestGseqNMF:
 
     def test_warn_y(self) -> None:
         with pytest.warns(UserWarning, match="y*None"):
-            self.model.fit(self.test_dataset.data.T.copy(), y=np.zeros((42,)))
+            self.model.fit(
+                self.test_dataset.data.T.copy(),
+                y=np.zeros((42,)),
+                W=self.test_dataset.parameters["W_init"].copy(),
+                H=self.test_dataset.parameters["H_init"].copy(),
+            )
         # NOTE: This calls the full fit again, but that's fine. We want to make sure
         #  that the warning is raised but the model is still fitted.

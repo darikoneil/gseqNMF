@@ -121,7 +121,9 @@ class TestReconstruct:
     def test_reconstruct_computes_correct_reconstruction(
         example_dataset: Dataset, implementation: Callable
     ) -> None:
-        reconstruction = implementation(example_dataset.W, example_dataset.H)
+        reconstruction = implementation(
+            example_dataset.W.copy(), example_dataset.H.copy()
+        )
         assert np.allclose(reconstruction, example_dataset.parameters["x_hat"])
 
     @staticmethod
