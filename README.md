@@ -45,7 +45,3 @@ model = GseqNMF(
 )
 model.fit(data)
 ```
-
-### License
-
-This project is licensed under the terms of the MIT license.
