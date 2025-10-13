@@ -244,42 +244,30 @@ HYPERPARAMETER_LABELS: dict[str, str] = {
 COST_SMOOTHING_WINDOW: int = 5
 
 
-def calculate_subgradient_H(  # noqa: N802
-    H: NDArrayLike,  # noqa: N803
+def add_x_ortho_h_penalty(
     wt_x: NDArrayLike,
-    local_lam: float,
+    lam: float,
+    penalty: NDArrayLike,
+    conv_func: Callable,
     off_diagonal: NDArrayLike,
+    xp: ModuleType = np,
+) -> None:
+    if lam > 0.0:
+        penalty[:] = xp.dot(lam * off_diagonal, conv_func(wt_x))
+    else:
+        penalty.fill(0.0)
+
+
+def add_events_penalty(
+    H: NDArrayLike,  # noqa: N803
+    penalty: NDArrayLike,
     lam_H: float,  # noqa: N803
-    alpha_H: float,  # noqa: N803
-    conv_handle: Callable,
-) -> float:
-    """
-    Calculate subgradient for H.
-
-    :param H: H matrix (n_components x n_samples).
-    :param wt_x: W⊤ ⊛ X (n_components x n_samples).
-    :param local_lam: local lambda value.
-    :param off_diagonal: Off-diagonal elements of H H⊤.
-    :param lam_H: lambda for H.
-    :param alpha_H: L1 penaltyfor H.
-    :param conv_handle: Convolution function handle.
-    :return: subgradient for H
-    """  # noqa: RUF002
-    # REVIEW: No need to pre-allocate since subgradients are scalar
-    subgradient_H = np.dot(  # noqa: N806
-            local_lam * off_diagonal, conv_handle(wt_x)
-        ) if local_lam > 0.0 else 0.0
-    events_penalty = (
-            np.dot(
-                lam_H * off_diagonal, conv_handle(H)
-            )
-            if lam_H > 0.0
-            else 0.0
-        )
-    subgradient_H += alpha_H + events_penalty  # noqa: N806
-    return subgradient_H
-
-# TODO: Break apart the subgradient calculation into smaller functions
+    off_diagonal: NDArrayLike,
+    conv_func: Callable,
+) -> None:
+    if lam_H <= 0.0:
+        return
+    penalty += np.dot(lam_H * off_diagonal, conv_func(H))
 
 
 def check_convergence(

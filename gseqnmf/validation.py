@@ -104,6 +104,37 @@ class RECON_METHOD(Enum):  # noqa: N801
 RECONSTRUCTION_METHODS: type[str] = Literal["normal", "fast"]
 
 
+class W_UPDATE_METHOD(Enum):  # noqa: N801
+    """
+    Enumeration of update methods for the W matrix in the GseqNMF algorithm.
+    """
+
+    FIXED = "fixed"
+    PARTIAL = "partial"
+    FULL = "full"
+
+    @staticmethod
+    def parse(value: str | Enum | None) -> "RECON_METHOD":
+        if isinstance(value, W_UPDATE_METHOD):
+            return value
+        if value is None:
+            return W_UPDATE_METHOD.FULL
+        try:
+            return W_UPDATE_METHOD(value.lower())
+        except (ValueError, AttributeError) as exc:
+            msg = f"Unknown W update setting: {value}. "
+            msg += f"Available settings are: {W_UPDATE_METHOD.options()}"
+            raise SeqNMFInitializationError(msg) from exc
+
+    @staticmethod
+    def options() -> list[str]:
+        return [m.value for m in W_UPDATE_METHOD]
+
+
+#: Options for W update methods in the GseqNMF algorithm (Docs/Hints).
+W_UPDATE_METHODS: type[str] = Literal["fixed", "partial", "full"]
+
+
 #: Constraints for parameters
 PARAMETER_CONSTRAINTS: dict[str, list] = {
     "n_components": [int, Interval(Real, left=1, right=None, closed="left")],
@@ -117,7 +148,7 @@ PARAMETER_CONSTRAINTS: dict[str, list] = {
     "lam_H": [float, Interval(Real, left=0, right=None, closed="left")],
     "shift": [bool],
     "sort": [bool],
-    "update_W": [bool],
+    "W_update": [StrOptions(set(W_UPDATE_METHOD.options())), W_UPDATE_METHOD, None],
     "init": [StrOptions(set(INIT_METHOD.options())), INIT_METHOD, None],
     "recon": [StrOptions(set(RECON_METHOD.options())), RECON_METHOD, None],
     "random_state": [int, None],

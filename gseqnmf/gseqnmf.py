@@ -14,9 +14,10 @@ from gseqnmf.exceptions import (
     SeqNMFInitializationError,
 )
 from gseqnmf.support import (
+    add_events_penalty,
+    add_x_ortho_h_penalty,
     calculate_loading_power,
     calculate_power,
-    calculate_subgradient_H,
     check_convergence,
     create_textbar,
     nndsvd_init,
@@ -38,6 +39,8 @@ from gseqnmf.validation import (
     PARAMETER_CONSTRAINTS,
     RECON_METHOD,
     RECONSTRUCTION_METHODS,
+    W_UPDATE_METHOD,
+    W_UPDATE_METHODS,
     NDArrayLike,
     cuda_available,
     device_available,
@@ -105,12 +108,11 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         lam_H: float = 0.0,  # noqa: N803
         shift: bool = True,
         sort: bool = True,
-        update_W: bool = True,  # noqa: N803
+        W_update: W_UPDATE_METHODS | W_UPDATE_METHOD = W_UPDATE_METHOD.FULL,  # noqa: N803
         init: INITIALIZATION_METHODS | INIT_METHOD = INIT_METHOD.RANDOM,
         recon: RECONSTRUCTION_METHODS | RECON_METHOD = RECON_METHOD.FAST,
         random_state: int | None = None,
         use_gpu: bool = False,
-        fixed_W: bool = False,  # noqa: N803
     ):
         self.n_components: int = n_components
         self.sequence_length: int = sequence_length
@@ -123,12 +125,13 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         self.lam_H: float = lam_H
         self.shift: bool = shift
         self.sort: bool = sort
-        self.update_W: bool = update_W
+        self.W_update: W_UPDATE_METHODS | W_UPDATE_METHOD = W_UPDATE_METHOD.parse(
+            W_update
+        )
         self.init: INITIALIZATION_METHODS | INIT_METHOD = init
         self.recon: RECONSTRUCTION_METHODS | RECON_METHOD = recon
         self.random_state: int | None = random_state
         self.use_gpu: bool = use_gpu
-        self.fixed_W: bool = fixed_W
         ###########################################
         self._is_fitted: bool = False
         # NOTE: This is an  sklearn flag to indicate if the model has been fitted.
@@ -234,9 +237,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         sequence_length: int,
         off_diagonal: NDArrayLike,
         # lam_W: float = 0.0,
-        # alpha_W: float = 0.0,
         lam_H: float = 0.0,  # noqa: N803
-        alpha_H: float = 0.0,  # noqa: N803
         epsilon: float = np.finfo(float).eps,
     ) -> dict[str, Callable]:
         """
@@ -262,15 +263,19 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         tensor_func = partial(
             trans_tensor_convolution, X=padded_X, sequence_length=sequence_length
         )
-        norm_func = partial(
+        renormalize_func = partial(
             renormalize, sequence_length=sequence_length, epsilon=epsilon
         )
-        subgrad_H_func = partial(  # noqa: N806
-            calculate_subgradient_H,
+        add_x_ortho_h_penalty_func = partial(
+            add_x_ortho_h_penalty,
             off_diagonal=off_diagonal,
-            conv_handle=conv_func,
+            conv_func=conv_func,
+        )
+        add_events_penalty_func = partial(
+            add_events_penalty,
             lam_H=lam_H,
-            alpha_H=alpha_H,
+            off_diagonal=off_diagonal,
+            conv_func=conv_func,
         )
         return {
             "cost": cost_func,
@@ -278,8 +283,9 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             "power": power_func,
             "conv": conv_func,
             "tensor": tensor_func,
-            "norm": norm_func,
-            "subgrad_H": subgrad_H_func,
+            "norm": renormalize_func,
+            "x_ortho_h": add_x_ortho_h_penalty_func,
+            "events": add_events_penalty_func,
         }
 
     @staticmethod
@@ -289,6 +295,10 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         n_components: int,
         sequence_length: int,
         max_iter: int,
+        lam: float,
+        lam_W: float,  # noqa: N803
+        update_W: bool,  # noqa: N803
+        recon: RECON_METHOD,
     ) -> dict[str, np.ndarray]:
         """
         Preallocate arrays for intermediate calculations.
@@ -298,27 +308,28 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         :param n_components: Number of components.
         :param sequence_length: Length of the sequences.
         :param max_iter: Maximum number of iterations.
-
+        :param lam: Regularization parameter for x-ortho.
+        :param lam_W: Parts-based regularization parameter for W.
+        :param update_W: Whether W is being updated.
+        :param recon: Reconstruction method.
         :returns: Dictionary of preallocated arrays.
         """
         n_samples = n_samples + 2 * sequence_length
-        cost = np.ones((max_iter + 1, 1)) * np.nan
-        h_shifted = np.zeros((sequence_length, n_components, n_samples))
-        x_hat = np.empty((n_features, n_samples))
-        xs = np.empty_like(x_hat)
-        w_flat = np.empty((n_features, n_components))
-        wt_x = np.empty((n_components, n_samples))
-        wt_x_hat = np.empty_like(wt_x)
-        # BUG: Some of these actually may or may not be needed. Determine how we can
-        #  handle this to save memory without making spaghetti.
         return {
-            "cost": cost,
-            "h_shifted": h_shifted,
-            "x_hat": x_hat,
-            "wt_x": wt_x,
-            "wt_x_hat": wt_x_hat,
-            "xs": xs,
-            "w_flat": w_flat,
+            "cost": np.ones((max_iter + 1, 1)) * np.nan,
+            "h_shifted": np.empty((n_components, n_samples)),
+            "recon_h_shifted": np.empty((sequence_length, n_components, n_samples))
+            if recon == RECON_METHOD.FAST
+            else None,
+            "pd_penalty_h": np.empty((n_components, n_samples)),
+            "pd_penalty_w": np.empty((n_features, n_components)),
+            "x_hat": np.empty((n_features, n_samples)),
+            "wt_x": np.empty((n_components, n_samples)),
+            "wt_x_hat": np.empty((n_components, n_samples)),
+            "xs": np.empty((n_features, n_samples))
+            if (lam > 0.0 and update_W.value == W_UPDATE_METHOD.FULL.value)
+            else None,
+            "w_flat": np.empty((n_features, n_components)) if lam_W > 0.0 else None,
         }
 
     # noinspection PyUnusedLocal
@@ -349,16 +360,16 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         self,
         X: NDArrayLike,  # noqa: N803
         y: NDArrayLike | None = None,
-        W_init: NDArrayLike | None = None,  # noqa: N803
-        H_init: NDArrayLike | None = None,  # noqa: N803
+        W: NDArrayLike | None = None,  # noqa: N803
+        H: NDArrayLike | None = None,  # noqa: N803
     ) -> "GseqNMF":
         """
         Fit the seqNMF model to the data ``X``.
 
         :param X: Input data matrix (n_features x n_samples).
         :param y: Ignored, present for API consistency.
-        :param W_init: Initial W matrix.
-        :param H_init: Initial H matrix.
+        :param W: Initial W matrix.
+        :param H: Initial H matrix.
 
         :returns: Fitted seqNMF instance.
 
@@ -370,199 +381,10 @@ class GseqNMF(TransformerMixin, BaseEstimator):
                 "It is present for API consistency by convention."
             )
             warn(msg, UserWarning, stacklevel=2)
-        self.n_samples_in, self.n_features_in = X.shape
 
-        X = np.ascontiguousarray(X.T)  # noqa: N806
-        # NOTE: sklearn convention is (n_samples, n_features). We transpose and enforce
-        #   contiguous array for performance in the underlying routines.
-        # OPTIMIZE: We could add a check or flag here to short circuit this step.
-        # OPTIMIZE: We could rework some of the math to avoid O(n) space complexity,
-        #  but we'd need to check how that impacts cache locality. If we were
-        #  offloading to a GPU, I think it's O(1) for RAM since we don't need to
-        #  actually enforce CPU contiguity in that case (I think).
-
-        """
-        ================================================================================
-        1.) Initialize. Create zero-padded data matrix to handle edge effects if a
-        sequence extends beyond the data boundaries. Create initial values for W and H
-        based on the specified initialization method. Note that the shape of H is
-        matched to the padded data matrix, NOT the original data matrix.
-        ================================================================================
-        2.) Make function handles for functions requiring repeated calls with fixed
-        parameters, such as calculating cost & loadings. In the future, we can
-        either use these handles and the associated builder to incorporate dynamic
-        implementation of cpu & gpu calls. Bound numpy arrays will still be passed
-        by reference. We don't call a routine to bind an implementation to the instance
-        because they will not be called outside of fit().
-        ================================================================================
-        3.) Preallocate arrays to hold intermediate calculations. Most users will be
-        memory-bound, so we want to avoid unnecessary allocations. This also helps make
-        sure that any out of memory errors are caught as early as possible.
-        ================================================================================
-        4.) Solve by iteratively calling penalized multiplicative updates
-        until convergence or reaching the maximum number of iterations.
-        ================================================================================
-        5.) After fitting, store the final W and H matrices, as well as the training
-        cost, loadings, and power.
-        ================================================================================
-        """
-
-        # TODO: Make documentation for the steps of fitting
-
-        # TODO: make a _fit method that is called by fit to allow the same method to be
-        #  called by transform. Otherwise, have trasnform call fit with fixed W?
-
-        X, W, H, self.init = self._initialize(  # noqa: N806
-            X=X,
-            n_components=self.n_components,
-            sequence_length=self.sequence_length,
-            init=self.init,
-            W_init=W_init,
-            H_init=H_init,
+        (self.W_, self.H_, self.cost_, self.loadings_, self.power_) = self._fit(
+            X=X, W=W, H=H, W_update=self.W_update
         )
-        # REVIEW: It might be cleaner to separate the initialization of W and H,
-        #  the padding of X, and/or the dispatching logic for the initialization method.
-
-        epsilon = np.max(X) * 1e-6
-        off_diagonal = 1 - np.eye(self.n_components)
-
-        _handles = self._prep_handles(
-            X,
-            self.sequence_length,
-            off_diagonal=off_diagonal,
-            # lam_W=self.lam_W,
-            # alpha_W=self.alpha_W,
-            lam_H=self.lam_H,
-            alpha_H=self.alpha_H,
-            epsilon=epsilon,
-        )
-        cost_func = _handles["cost"]
-        loading_func = _handles["loading"]
-        power_func = _handles["power"]
-        conv_func = _handles["conv"]
-        trans_tensor_conv_func = _handles["tensor"]
-        norm_func = _handles["norm"]
-        subgrad_H_func = _handles["subgrad_H"]  # noqa: N806
-
-        _arrays = self._preallocate(
-            self.n_features_in,
-            self.n_samples_in,
-            self.n_components,
-            self.sequence_length,
-            self.max_iter,
-        )
-        cost = _arrays["cost"]
-        _h_shifted = _arrays["h_shifted"]
-        x_hat = _arrays["x_hat"]
-        xs = _arrays["xs"]
-        w_flat = _arrays["w_flat"]
-        wt_x = _arrays["wt_x"]
-        wt_x_hat = _arrays["wt_x_hat"]
-
-        x_hat[:] = self._inverse_transform(W=W, H=H, h_shifted=_h_shifted)
-        cost[0] = cost_func(x_hat=x_hat)
-        # NOTE: Initial cost before any updates
-
-        post_fix = {"cost": "N/A"}
-        textbar = create_textbar(
-            self.n_components,
-            self.sequence_length,
-            self.max_iter,
-            lam=self.lam,
-            alpha_H=self.alpha_H,
-            alpha_W=self.alpha_W,
-            lam_H=self.lam_H,
-            lam_W=self.lam_W,
-        )
-        pbar = tqdm(
-            range(self.max_iter),
-            total=self.max_iter,
-            desc="Fitting",
-            unit="iter",
-            initial=0,
-            colour="#6dff9b",
-            postfix=post_fix,
-            position=0,
-        )
-
-        local_lam = self.lam
-        for iter_ in range(1, self.max_iter + 1):
-            if IS_FIT := check_convergence(  # noqa: N806
-                iteration=iter_, max_iter=self.max_iter, cost_vector=cost, tol=self.tol
-            ):
-                local_lam = 0
-                # NOTE: We set local_lam to 0 at convergence when the IS_FIT flag is
-                #  set. The final iteration will complete the updates with no
-                #  cross-factor regularization.
-
-            trans_tensor_conv_func(W=W, x_hat=x_hat, wt_x=wt_x, wt_x_hat=wt_x_hat)
-            #: NOTE: This calculation of Wt⊛X & Wt⊛X̂ is a bottleneck.
-
-            subgradient_H = subgrad_H_func(
-                H=H,
-                wt_x=wt_x,
-                local_lam=local_lam,
-            )
-            # OPTIMIZE: Check whether the conv_func can be optimized
-
-            H *= np.divide(wt_x, wt_x_hat + subgradient_H + epsilon)  # noqa: N806
-
-            if self.shift:
-                W, H = shift_factors(W, H)  # noqa: N806
-                W += epsilon  # noqa: N806
-
-            norm_func(W=W, H=H)
-
-            x_hat[:] = self._inverse_transform(W=W, H=H, h_shifted=_h_shifted)
-
-            if not self.fixed_W:
-                if self.lam_W > 0:
-                    w_flat[:] = W.sum(axis=2)
-                if (local_lam > 0) and self.update_W:
-                    xs[:] = conv_func(X)
-
-                for shift in range(self.sequence_length):
-                    h_shifted = np.roll(H, shift - 1, axis=1)
-                    x_ht = np.dot(X, h_shifted.T)
-                    x_hat_ht = np.dot(x_hat, h_shifted.T)
-
-                    if (local_lam > 0) and self.update_W:
-                        subgradient_W = np.dot(  # noqa: N806
-                            local_lam * np.dot(xs, h_shifted.T), off_diagonal
-                        )
-                    else:
-                        subgradient_W = 0.0  # noqa: N806
-
-                    if self.lam_W > 0:
-                        dWWdW = np.dot(self.lam_W * w_flat, off_diagonal)  # noqa: N806
-                    else:
-                        dWWdW = 0.0  # noqa: N806
-                    subgradient_W += self.alpha_W + dWWdW  # noqa: N806
-
-                    W[:, :, shift] *= np.divide(
-                        x_ht, x_hat_ht + subgradient_W + epsilon
-                    )
-            # TODO: Encapsulate me into a function
-
-            x_hat[:] = self._inverse_transform(W=W, H=H, h_shifted=_h_shifted)
-            cost[iter_] = cost_func(x_hat=x_hat)
-            post_fix["cost"] = f"{cost[iter_].item():.4e}"
-            pbar.update()
-            pbar.set_postfix(post_fix)
-
-            if IS_FIT:
-                break
-
-        pbar.close()
-        textbar.close()
-        # NOTE: Make sure to close the progress bars to avoid display issues.
-
-        self.W_ = W
-        self.H_ = H[:, self.sequence_length : -self.sequence_length]
-        # NOTE: We trim the padding off H to match the original data dimensions.
-        self.cost_ = cost
-        self.loadings_ = loading_func(W=W, H=H)
-        self.power_ = power_func(x_hat=x_hat)
 
         if self.sort:
             self.W_, self.H_, self.loadings_ = sort_indices(
@@ -622,22 +444,25 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         #  fit followed by transform. The result with be more accurate if we call fit
         #  and then return H DIRECTLY rather than calling fit with a fixed W. It also
         #  avoids having to essentially fit twice.
-        self.fit(X=X, W_init=W, H_init=H)
+        self.fit(X=X, W=W, H=H)
         return self.H_
 
-    # noinspection PyUnusedLocal
-    def transform(self, X: np.ndarray) -> np.ndarray:  # noqa: ARG002, N803
+    def transform(self, X: np.ndarray) -> np.ndarray:  # noqa: N803
         """
         Transform the data ``X`` using the fitted model.
 
         :param X: Input data matrix.
-
-        :returns: Transformed data.
-
-        :raises NotImplementedError: This method is not yet implemented.
+        :returns: Transformed data (n_components x n_samples).
         """
         check_is_fitted(self)
-        raise NotImplementedError
+        _, H, _, _, _ = self._fit(  # noqa: N806
+            X=X,
+            W=self.W_,
+            H=self.H_,
+            # HACK: Spaghetti to force W to be fixed during transform.
+            W_update=W_UPDATE_METHOD.FIXED,
+        )
+        return H
 
     # noinspection PyMethodMayBeStatic
     def inverse_transform(
@@ -660,6 +485,223 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         H = H if H is not None else self.H_  # noqa: N806
         check_is_fitted(self)
         return self._inverse_transform(W=W, H=H, h_shifted=h_shifted)
+
+    def _fit(
+        self,
+        X: NDArrayLike,  # noqa: N803
+        W_update: W_UPDATE_METHOD,  # noqa: N803
+        W: NDArrayLike | None = None,  # noqa: N803
+        H: NDArrayLike | None = None,  # noqa: N803
+    ) -> tuple[NDArrayLike, NDArrayLike, NDArrayLike, NDArrayLike, float]:
+        self.n_samples_in, self.n_features_in = X.shape
+
+        X = np.ascontiguousarray(X.T)  # noqa: N806
+        # NOTE: sklearn convention is (n_samples, n_features). We transpose and enforce
+        #   contiguous array for performance in the underlying routines.
+        # OPTIMIZE: We could add a check or flag here to short circuit this step.
+        # OPTIMIZE: We could rework some of the math to avoid O(n) space complexity,
+        #  but we'd need to check how that impacts cache locality. If we were
+        #  offloading to a GPU, I think it's O(1) for RAM since we don't need to
+        #  actually enforce CPU contiguity in that case (I think).
+
+        """
+        ================================================================================
+        1.) Initialize. Create zero-padded data matrix to handle edge effects if a
+        sequence extends beyond the data boundaries. Create initial values for W and H
+        based on the specified initialization method. Note that the shape of H is
+        matched to the padded data matrix, NOT the original data matrix.
+        ================================================================================
+        2.) Make function handles for functions requiring repeated calls with fixed
+        parameters, such as calculating cost & loadings. In the future, we can
+        either use these handles and the associated builder to incorporate dynamic
+        implementation of cpu & gpu calls. Bound numpy arrays will still be passed
+        by reference. We don't call a routine to bind an implementation to the instance
+        because they will not be called outside of fit().
+        ================================================================================
+        3.) Preallocate arrays to hold intermediate calculations. Most users will be
+        memory-bound, so we want to avoid unnecessary allocations. This also helps make
+        sure that any out of memory errors are caught as early as possible.
+        ================================================================================
+        4.) Solve by iteratively calling regularized multiplicative updates
+        until convergence or reaching the maximum number of iterations.
+        ================================================================================
+        5.) After fitting, store the final W and H matrices, as well as the training
+        cost, loadings, and power.
+        ================================================================================
+        """
+        # TODO: Make documentation for the steps of fitting
+
+        # HACK: Temporary spaghetti to handle the fact that we need to fix W when using
+        #  transform(). We could probably make this cleaner.
+        # REVIEW: It might be cleaner to separate the initialization of W and H,
+        #  the padding of X, and/or the dispatching logic for the initialization method.
+        if W_update.value == W_UPDATE_METHOD.FIXED.value:
+            X, _, H, self.init = self._initialize(  # noqa: N806
+                X=X,
+                n_components=self.n_components,
+                sequence_length=self.sequence_length,
+                init=INIT_METHOD.RANDOM,
+                W_init=W,
+                H_init=H,
+            )
+        else:
+            X, W, H, self.init = self._initialize(  # noqa: N806
+                X=X,
+                n_components=self.n_components,
+                sequence_length=self.sequence_length,
+                init=self.init,
+                W_init=W,
+                H_init=H,
+            )
+
+        epsilon = np.max(X) * 1e-6
+        off_diagonal = 1 - np.eye(self.n_components)
+
+        _handles = self._prep_handles(
+            X,
+            self.sequence_length,
+            off_diagonal=off_diagonal,
+            # lam_W=self.lam_W,
+            lam_H=self.lam_H,
+            epsilon=epsilon,
+        )
+        cost_func = _handles["cost"]
+        loading_func = _handles["loading"]
+        power_func = _handles["power"]
+        conv_func = _handles["conv"]
+        trans_tensor_conv_func = _handles["tensor"]
+        renormalize_func = _handles["norm"]
+        add_events_penalty_func = _handles["events"]
+        add_x_ortho_h_penalty_func = _handles["x_ortho_h"]
+
+        _prealloc = self._preallocate(
+            n_features=self.n_features_in,
+            n_samples=self.n_samples_in,
+            n_components=self.n_components,
+            sequence_length=self.sequence_length,
+            max_iter=self.max_iter,
+            lam=self.lam,
+            lam_W=self.lam_W,
+            update_W=W_update,
+            recon=self.recon,
+        )
+        cost = _prealloc["cost"]
+        h_shifted = _prealloc["h_shifted"]
+        recon_h_shifted = _prealloc["recon_h_shifted"]
+        pd_penalty_h = _prealloc["pd_penalty_h"]
+        pd_penalty_w = _prealloc["pd_penalty_w"]
+        x_hat = _prealloc["x_hat"]
+        xs = _prealloc["xs"]
+        w_flat = _prealloc["w_flat"]
+        wt_x = _prealloc["wt_x"]
+        wt_x_hat = _prealloc["wt_x_hat"]
+
+        x_hat[:] = self._inverse_transform(W=W, H=H, h_shifted=recon_h_shifted)
+        cost[0] = cost_func(x_hat=x_hat)
+        # NOTE: Initial cost before any updates
+
+        post_fix = {"cost": "N/A"}
+        textbar = create_textbar(
+            self.n_components,
+            self.sequence_length,
+            self.max_iter,
+            lam=self.lam,
+            alpha_H=self.alpha_H,
+            alpha_W=self.alpha_W,
+            lam_H=self.lam_H,
+            lam_W=self.lam_W,
+        )
+        pbar = tqdm(
+            range(self.max_iter),
+            total=self.max_iter,
+            desc="Fitting",
+            unit="iter",
+            initial=0,
+            colour="#6dff9b",
+            postfix=post_fix,
+            position=0,
+        )
+
+        local_lam = self.lam
+        for iter_ in range(1, self.max_iter + 1):
+            if IS_FIT := check_convergence(  # noqa: N806
+                iteration=iter_, max_iter=self.max_iter, cost_vector=cost, tol=self.tol
+            ):
+                local_lam = 0
+                # NOTE: We set local_lam to 0 at convergence when the IS_FIT flag is
+                #  set. The final iteration will complete the updates with no
+                #  cross-factor regularization.
+
+            trans_tensor_conv_func(W=W, x_hat=x_hat, wt_x=wt_x, wt_x_hat=wt_x_hat)
+            # NOTE: This calculation of Wt⊛X & Wt⊛X̂ is a bottleneck.
+
+            add_x_ortho_h_penalty_func(
+                wt_x=wt_x,
+                lam=local_lam,
+                penalty=pd_penalty_h,
+            )
+            add_events_penalty_func(
+                H=H,
+                penalty=pd_penalty_h,
+            )
+            pd_penalty_h += self.alpha_H
+            # NOTE: calculation of partial derivative of penalty w.r.t H is a secondary
+            #  bottleneck, specifically the conv2d operation called in the non-scalar
+            #  x-ortho & events penalties.
+
+            H *= np.divide(wt_x, wt_x_hat + pd_penalty_h + epsilon)  # noqa: N806
+            if self.shift:
+                W, H = shift_factors(W, H)  # noqa: N806
+                W += epsilon  # noqa: N806
+            renormalize_func(W=W, H=H)
+            x_hat[:] = self._inverse_transform(W=W, H=H, h_shifted=recon_h_shifted)
+
+            if W_update.value != W_UPDATE_METHOD.FIXED.value:
+                if self.lam_W > 0:
+                    w_flat[:] = W.sum(axis=2)
+
+                if (local_lam > 0) and W_update.value == W_UPDATE_METHOD.FULL.value:
+                    xs[:] = conv_func(X)
+
+                for shift in range(self.sequence_length):
+                    h_shifted[:] = np.roll(H, shift - 1, axis=1)
+                    x_ht = np.dot(X, h_shifted.T)
+                    x_hat_ht = np.dot(x_hat, h_shifted.T)
+
+                    if (local_lam > 0) and W_update.value == W_UPDATE_METHOD.FULL.value:
+                        pd_penalty_w[:] = np.dot(
+                            local_lam * np.dot(xs, h_shifted.T), off_diagonal
+                        )
+                    else:
+                        pd_penalty_w.fill(0.0)
+
+                    if self.lam_W > 0:
+                        pd_penalty_w += np.dot(self.lam_W * w_flat, off_diagonal)
+
+                    pd_penalty_w += self.alpha_W
+
+                    W[:, :, shift] *= np.divide(x_ht, x_hat_ht + pd_penalty_w + epsilon)
+
+            x_hat[:] = self._inverse_transform(W=W, H=H, h_shifted=recon_h_shifted)
+            cost[iter_] = cost_func(x_hat=x_hat)
+            post_fix["cost"] = f"{cost[iter_].item():.4e}"
+            pbar.update()
+            pbar.set_postfix(post_fix)
+
+            if IS_FIT:
+                break
+
+        pbar.close()
+        textbar.close()
+        # NOTE: Make sure to close the progress bars to avoid display issues.
+
+        return (
+            W,
+            H[:, self.sequence_length : -self.sequence_length],
+            cost,
+            loading_func(W=W, H=H),
+            power_func(x_hat=x_hat),
+        )
 
     def _set_recon_method(self) -> None:
         """
