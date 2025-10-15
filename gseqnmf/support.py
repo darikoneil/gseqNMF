@@ -38,8 +38,8 @@ User-Exposed Miscellaneous Helpers & Functions
 
 
 def calculate_power(
-    X: np.ndarray,  # noqa: N803
-    x_hat: np.ndarray,
+    X: NDArrayLike,  # noqa: N803
+    x_hat: NDArrayLike,
     epsilon: float = np.finfo(float).eps,
     padding_index: slice | None = None,
     xp: ModuleType = np,
@@ -54,6 +54,7 @@ def calculate_power(
     :param xp: Array module (e.g., numpy or cupy) for computation.
     :return: Percent power explained (float).
     """
+    epsilon = xp.asarray(epsilon)
     if padding_index is not None:
         X_unpad = X[:, padding_index]  # noqa: N806
         x_hat_unpad = x_hat[:, padding_index]
@@ -65,13 +66,13 @@ def calculate_power(
 
 
 def calculate_loading_power(
-    X: np.ndarray,  # noqa: N803
-    W: np.ndarray,  # noqa: N803
-    H: np.ndarray,  # noqa: N803
+    X: NDArrayLike,  # noqa: N803
+    W: NDArrayLike,  # noqa: N803
+    H: NDArrayLike,  # noqa: N803
     epsilon: float = np.finfo(float).eps,
     padding_index: slice | None = None,
     xp: ModuleType = np,
-) -> np.ndarray:
+) -> NDArrayLike:
     """
     Calculate the percent power explained by each component's loading.
 
@@ -83,6 +84,7 @@ def calculate_loading_power(
     :param xp: Array module (e.g., numpy or cupy) for computation.
     :return: Array of percent power explained per component.
     """
+    epsilon = xp.asarray(epsilon)
     if padding_index is not None:
         X_unpad = X[:, padding_index]  # noqa: N806
         H_unpad = H[:, padding_index]  # noqa: N806
@@ -367,7 +369,7 @@ def shift_factors(
     warnings.simplefilter("ignore")
     n_features, _, sequence_length = W.shape
     n_components, _ = H.shape
-    center = int(xp.max([xp.floor(sequence_length / 2), 1]))
+    center = int(max(xp.floor(sequence_length / 2), 1))
     w_pad = xp.concatenate(
         (
             xp.zeros([n_features, n_components, sequence_length]),

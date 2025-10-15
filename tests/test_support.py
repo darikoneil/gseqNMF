@@ -13,6 +13,8 @@ try:
     import cupy as cp
 except ImportError:
     cp = np
+from types import ModuleType
+
 import pytest
 
 from gseqnmf.support import (
@@ -33,6 +35,7 @@ from gseqnmf.support import (
     shift_factors,
     trans_tensor_convolution,
 )
+from gseqnmf.validation import NDArrayLike
 from tests.conftest import Dataset
 
 
@@ -62,11 +65,20 @@ class TestCalculatePower:
         ],
     )
     def test_calculate_power_returns_correct_percent_power(
-        X: np.ndarray,  # noqa: N803
-        x_hat: np.ndarray,
-        expected_power: np.ndarray,
+        X: NDArrayLike,  # noqa: N803
+        x_hat: NDArrayLike,
+        expected_power: NDArrayLike,
+        xp_imp: ModuleType,
     ) -> None:
-        assert calculate_power(X, x_hat) == pytest.approx(expected_power, abs=1e-2)
+        xp_imp.testing.assert_allclose(
+            calculate_power(
+                xp_imp.asarray(X),
+                xp_imp.asarray(x_hat),
+                epsilon=xp_imp.finfo(float).eps,
+                xp=xp_imp,
+            ),
+            xp_imp.asarray(expected_power),
+        )
 
     @staticmethod
     @pytest.mark.parametrize(
@@ -93,20 +105,33 @@ class TestCalculatePower:
         x_hat: np.ndarray,
         padding_index: slice,
         expected_power: float,
+        xp_imp: ModuleType,
     ) -> None:
-        assert calculate_power(X, x_hat, padding_index=padding_index) == pytest.approx(
-            expected_power, abs=1e-2
+        xp_imp.testing.assert_allclose(
+            calculate_power(
+                xp_imp.asarray(X),
+                xp_imp.asarray(x_hat),
+                epsilon=xp_imp.finfo(float).eps,
+                padding_index=padding_index,
+                xp=xp_imp,
+            ),
+            xp_imp.asarray(expected_power),
         )
 
 
-def test_calculate_loading_power(example_dataset: Dataset) -> None:
-    expected_loadings = example_dataset.loadings
+def test_calculate_loading_power(example_dataset: Dataset, xp_imp: ModuleType) -> None:
+    expected_loadings = xp_imp.asarray(example_dataset.loadings).reshape((-1,))
     loadings = calculate_loading_power(
-        example_dataset.data,
-        example_dataset.W,
-        example_dataset.H,
+        xp_imp.asarray(example_dataset.data),
+        xp_imp.asarray(example_dataset.W),
+        xp_imp.asarray(example_dataset.H),
+        epsilon=xp_imp.finfo(float).eps,
+        xp=xp_imp,
     )
-    assert np.allclose(loadings, expected_loadings)
+    xp_imp.testing.assert_allclose(
+        loadings,
+        expected_loadings,
+    )
 
 
 class TestReconstruct:
@@ -119,12 +144,18 @@ class TestReconstruct:
         ],
     )
     def test_reconstruct_computes_correct_reconstruction(
-        example_dataset: Dataset, implementation: Callable
+        example_dataset: Dataset,
+        implementation: Callable,
+        xp_imp: ModuleType,
     ) -> None:
         reconstruction = implementation(
-            example_dataset.W.copy(), example_dataset.H.copy()
+            xp_imp.asarray(example_dataset.W.copy()),
+            xp_imp.asarray(example_dataset.H.copy()),
+            xp=xp_imp,
         )
-        assert np.allclose(reconstruction, example_dataset.parameters["x_hat"])
+        xp_imp.testing.assert_allclose(
+            reconstruction, xp_imp.asarray(example_dataset.parameters["x_hat"])
+        )
 
     @staticmethod
     @pytest.mark.parametrize(
@@ -135,18 +166,25 @@ class TestReconstruct:
         ],
     )
     def test_reconstruct_handles_preallocation(
-        example_dataset: Dataset, implementation: Callable
+        example_dataset: Dataset,
+        implementation: Callable,
+        xp_imp: ModuleType,
     ) -> None:
-        h_shifted = np.zeros(
+        h_shifted = xp_imp.zeros(
             (
                 example_dataset.parameters["sequence_length"],
                 example_dataset.parameters["num_components"],
                 example_dataset.H.shape[1],
             )
         )
-        _ = implementation(example_dataset.W, example_dataset.H, h_shifted=h_shifted)
+        _ = implementation(
+            xp_imp.asarray(example_dataset.W),
+            xp_imp.asarray(example_dataset.H),
+            h_shifted=h_shifted,
+            xp=xp_imp,
+        )
         if implementation is reconstruct_fast:
-            assert np.sum(h_shifted) != 0, "h_shifted was not modified in-place"
+            assert xp_imp.sum(h_shifted) != 0, "h_shifted was not modified in-place"
 
 
 @pytest.mark.parametrize(
@@ -158,20 +196,22 @@ class TestReconstruct:
     ],
 )
 def test_calculate_rmse(
-    example_dataset: Dataset, comparison: str, expected: float
+    example_dataset: Dataset, comparison: str, expected: float, xp_imp: ModuleType
 ) -> None:
-    X = example_dataset.data.copy()  # noqa: N806
+    X = xp_imp.asarray(example_dataset.data.copy())  # noqa: N806
     if comparison == "exact":
-        x_hat = X.copy()
+        x_hat = xp_imp.asarray(X.copy())
     elif comparison == "off_by_one":
-        x_hat = X.copy()
+        x_hat = xp_imp.asarray(X.copy())
         x_hat[0, 0] += 1
     elif comparison == "all_off_by_one":
-        x_hat = X.copy() + 1
+        x_hat = xp_imp.asarray(X.copy()) + 1
     else:
         msg = "Invalid comparison type"
         raise ValueError(msg)
-    assert rmse(X, x_hat) == pytest.approx(expected, abs=1e-2)
+    xp_imp.testing.assert_allclose(
+        rmse(X, x_hat, xp=xp_imp), xp_imp.asarray(expected), atol=5e-3
+    )
 
 
 @pytest.mark.parametrize(
@@ -241,8 +281,9 @@ class TestPadData:
         X: np.ndarray,  # noqa: N803
         sequence_length: int,
         expected_shape: tuple[int, int],
+        xp_imp: ModuleType,
     ) -> None:
-        padded_X = pad_data(X, sequence_length)  # noqa: N806
+        padded_X = pad_data(xp_imp.asarray(X), sequence_length, xp=xp_imp)  # noqa: N806
         assert padded_X.shape == expected_shape
 
     @pytest.mark.parametrize(
@@ -261,13 +302,14 @@ class TestPadData:
         X: np.ndarray,  # noqa: N803
         sequence_length: int,
         zero_index: list[slice, slice],
+        xp_imp: ModuleType,
     ) -> None:
-        padded_X = pad_data(X, sequence_length)  # noqa: N806
-        assert np.array_equal(
-            padded_X[:, zero_index[0]], np.zeros(padded_X[:, zero_index[0]].shape)
+        padded_X = pad_data(xp_imp.asarray(X), sequence_length, xp=xp_imp)  # noqa: N806
+        assert xp_imp.array_equal(
+            padded_X[:, zero_index[0]], xp_imp.zeros(padded_X[:, zero_index[0]].shape)
         )
-        assert np.array_equal(
-            padded_X[:, zero_index[1]], np.zeros(padded_X[:, zero_index[1]].shape)
+        assert xp_imp.array_equal(
+            padded_X[:, zero_index[1]], xp_imp.zeros(padded_X[:, zero_index[1]].shape)
         )
 
 
@@ -303,18 +345,27 @@ class TestRandomInitW:
         sequence_length: int,
         random_state: int | None,
         expected_shape: tuple[int, int, int],
+        xp_imp: ModuleType,
     ) -> None:
-        W = random_init_W(X, n_components, sequence_length, random_state)  # noqa: N806
+        W = random_init_W(  # noqa: N806
+            xp_imp.asarray(X), n_components, sequence_length, random_state, xp=xp_imp
+        )
         assert W.shape == expected_shape
         assert (W >= 0).all()
         assert (X.max() >= W).all()
 
     @staticmethod
-    def test_random_init_W_is_deterministic_with_random_state() -> None:  # noqa: N802
-        X = np.ones((10, 20))  # noqa: N806
-        W1 = random_init_W(X, 5, 3, random_state=42)  # noqa: N806
-        W2 = random_init_W(X, 5, 3, random_state=42)  # noqa: N806
-        assert np.array_equal(W1, W2)
+    def test_random_init_W_is_deterministic_with_random_state(  # noqa: N802
+        xp_imp: ModuleType,
+    ) -> None:
+        X = xp_imp.ones((10, 20))  # noqa: N806
+        W1 = random_init_W(  # noqa: N806
+            xp_imp.asarray(X), 5, 3, random_state=42, xp=xp_imp
+        )
+        W2 = random_init_W(  # noqa: N806
+            xp_imp.asarray(X), 5, 3, random_state=42, xp=xp_imp
+        )
+        assert xp_imp.array_equal(W1, W2)
 
 
 class TestRandomInitH:
@@ -336,18 +387,33 @@ class TestRandomInitH:
         n_components: int,
         random_state: int | None,
         expected_shape: tuple[int, int],
+        xp_imp: ModuleType,
     ) -> None:
-        H = random_init_H(X, n_components, random_state)  # noqa: N806
+        H = random_init_H(  # noqa: N806
+            xp_imp.asarray(X),
+            n_components,
+            random_state,
+            xp=xp_imp,
+        )
         assert H.shape == expected_shape
         assert (H >= 0).all()
         assert (X.max() >= H).all()
 
     @staticmethod
-    def test_random_init_H_is_deterministic_with_random_state() -> None:  # noqa: N802
-        X = np.ones((10, 20))  # noqa: N806
-        H1 = random_init_H(X, 5, random_state=42)  # noqa: N806
-        H2 = random_init_H(X, 5, random_state=42)  # noqa: N806
-        assert np.array_equal(H1, H2)
+    def test_random_init_H_is_deterministic_with_random_state(  # noqa: N802
+        xp_imp: ModuleType,
+    ) -> None:
+        X = xp_imp.ones((10, 20))  # noqa: N806
+        H1 = random_init_H(  # noqa: N806
+            xp_imp.asarray(X),
+            5,
+            random_state=42,
+            xp=xp_imp,
+        )
+        H2 = random_init_H(  # noqa: N806
+            xp_imp.asarray(X), 5, random_state=42, xp=xp_imp
+        )
+        assert xp_imp.array_equal(H1, H2)
 
 
 class TestShiftFactors:
@@ -369,10 +435,13 @@ class TestShiftFactors:
         H: np.ndarray,  # noqa: N803
         expected_W: np.ndarray,  # noqa: N803
         expected_H: np.ndarray,  # noqa: N803
+        xp_imp: ModuleType,
     ) -> None:
-        shifted_W, shifted_H = shift_factors(W, H)  # noqa: N806
-        assert np.allclose(shifted_W, expected_W)
-        assert np.allclose(shifted_H, expected_H)
+        shifted_W, shifted_H = shift_factors(  # noqa: N806
+            xp_imp.asarray(W), xp_imp.asarray(H), xp=xp_imp
+        )
+        xp_imp.testing.assert_allclose(shifted_W, xp_imp.asarray(expected_W))
+        xp_imp.testing.assert_allclose(shifted_H, xp_imp.asarray(expected_H))
 
 
 class TestTransTensorConvolution:
@@ -398,12 +467,20 @@ class TestTransTensorConvolution:
         sequence_length: int,
         expected_wt_x: np.ndarray,
         expected_wt_x_hat: np.ndarray,
+        xp_imp: ModuleType,
     ) -> None:
-        wt_x = np.zeros_like(expected_wt_x)
-        wt_x_hat = np.zeros_like(expected_wt_x_hat)
-        trans_tensor_convolution(X, x_hat, W, wt_x, wt_x_hat, sequence_length)
-        assert np.allclose(wt_x, expected_wt_x)
-        assert np.allclose(wt_x_hat, expected_wt_x_hat)
+        wt_x = xp_imp.zeros_like(expected_wt_x)
+        wt_x_hat = xp_imp.zeros_like(expected_wt_x_hat)
+        trans_tensor_convolution(
+            xp_imp.asarray(X),
+            xp_imp.asarray(x_hat),
+            xp_imp.asarray(W),
+            xp_imp.asarray(wt_x),
+            xp_imp.asarray(wt_x_hat),
+            sequence_length,
+        )
+        xp_imp.testing.assert_allclose(wt_x, xp_imp.asarray(expected_wt_x))
+        xp_imp.testing.assert_allclose(wt_x_hat, xp_imp.asarray(expected_wt_x_hat))
 
 
 class TestNNSVDInit:

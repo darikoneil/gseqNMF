@@ -10,7 +10,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gseqnmf"
-version = "0.0.3"
+version = "0.0.4"
 description = "seqNMF with GPU support & sklearn syntax"
 readme = "README.md"
 requires-python = ">=3.12, <=4.0"

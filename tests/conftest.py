@@ -1,10 +1,12 @@
 import sys
 from os import devnull, environ
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import numpy as np
 import pytest
+from _pytest.fixtures import FixtureRequest
 
 #: The answer to life, the universe, and everything
 MEANING_OF_LIFE: int = 42
@@ -84,3 +86,20 @@ def example_dataset() -> Dataset:
     :return: Dataset object with test data and parameters.
     """
     return Dataset.load("example_dataset")
+
+
+@pytest.fixture(
+    scope="session",
+    params=[
+        pytest.param("numpy", id="cpu"),
+        pytest.param("cupy", id="gpu"),
+    ],
+)
+def xp_imp(request: FixtureRequest) -> ModuleType:
+    """
+    Fixture that provides the requested array implementation (numpy or cupy).
+
+    :param request: Pytest fixture request object.
+    :return: The requested array implementation module.
+    """
+    return pytest.importorskip(request.param)

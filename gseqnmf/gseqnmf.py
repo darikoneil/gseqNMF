@@ -1,5 +1,6 @@
 from collections.abc import Callable
 from functools import partial
+from types import ModuleType
 from warnings import warn
 
 import numpy as np
@@ -148,6 +149,9 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         #   does not validate the use_gpu parameter.
         if use_gpu:
             self._validate_gpu()
+            self.xp_ = self._import_cupy()
+        else:
+            self.xp_ = np
         ############################################
         self._set_recon_method()
 
@@ -179,7 +183,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         padded_X = pad_data(X, sequence_length)  # noqa: N806
         match init:
             case INIT_METHOD.RANDOM:
-                W_init = (
+                W_init = (  # noqa: N806
                     random_init_W(padded_X, n_components, sequence_length, random_state)
                     if W_update.value != W_UPDATE_METHOD.FIXED.value
                     else W_init
@@ -335,7 +339,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         raise NotImplementedError(msg)
 
     @staticmethod
-    def _validate_gpu() -> None:
+    def _validate_gpu() -> ModuleType:
         """
         Validate that GPU support is available.
 
@@ -345,6 +349,17 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             raise GPUNotSupportedError
         if not cuda_available() or not device_available():
             raise GPUNotAvailableError
+
+    @staticmethod
+    def _import_cupy() -> ModuleType:
+        """
+        Import the CuPy library.
+        """
+        import cupy as cp
+
+        return cp
+
+    # HACK: This is hacky, but I want to pass the xp module dynamically
 
     @_fit_context(prefer_skip_nested_validation=True)
     def fit(
@@ -482,6 +497,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         W_update: W_UPDATE_METHOD,  # noqa: N803
         W: NDArrayLike | None = None,  # noqa: N803
         H: NDArrayLike | None = None,  # noqa: N803
+        xp: ModuleType = np,  # TODO: drop-in
     ) -> tuple[NDArrayLike, NDArrayLike, NDArrayLike, NDArrayLike, float]:
         """
         Core fitting routine for seqNMF.
@@ -489,6 +505,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         :param W: Initial W matrix.
         :param W_update: Whether W is being updated.
         :param H: Initial H matrix.
+        :param xp: Numerical computing module (numpy or cupy).
         :return: Tuple of (W, H, cost, loadings, power).
         """
         self.n_samples_in, self.n_features_in = X.shape
