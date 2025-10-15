@@ -1,4 +1,5 @@
-from enum import Enum
+from abc import ABCMeta, abstractmethod
+from enum import Enum, EnumMeta
 from numbers import Real
 from typing import Literal
 
@@ -39,7 +40,59 @@ __all__ = [
 type NDArrayLike = ArrayLike | np.ndarray | "cp.ndarray"
 
 
-class INIT_METHOD(Enum):  # noqa: N801
+class _AbstractEnum(ABCMeta, EnumMeta):
+    """
+    Metaclass for creating abstract enumerations.
+    """
+
+
+# noinspection PyAbstractClass
+class _GSEQNMF_METHOD_BASE(Enum, metaclass=_AbstractEnum):  # noqa: N801
+    """
+    Base class for GseqNMF method enumerations.
+    """
+
+    @classmethod
+    def options(cls) -> list[str]:
+        """
+        List all available options in the class
+
+        :return: A list of options as strings.
+        """
+        return [method.value for method in cls]
+
+    @classmethod
+    def parse(cls, value: str | Enum | None) -> "_GSEQNMF_METHOD_BASE":
+        """
+        Parse the input value and return the corresponding method.
+
+        :param value: The input value to parse.
+        :return: The corresponding enum
+        :raises SeqNMFInitializationError: If the input value cannot be parsed.
+        """
+        if isinstance(value, cls):
+            return value
+        if value is None:
+            return cls.default()
+        try:
+            return cls(value.lower())
+        except (ValueError, AttributeError) as exc:
+            msg = f"Unknown {cls.__name__} option: {value}. "
+            msg += f"Available methods are: {cls.options()}"
+            raise SeqNMFInitializationError(msg) from exc
+
+    @classmethod
+    @abstractmethod
+    def default(cls) -> "_GSEQNMF_METHOD_BASE":
+        """
+        Get the default method for the class.
+
+        :return: The default method as an instance of the class.
+        """
+        ...
+
+
+class INIT_METHOD(_GSEQNMF_METHOD_BASE):  # noqa: N801
     """
     Enumeration of initialization methods for the GseqNMF algorithm.
     """
@@ -48,22 +101,9 @@ class INIT_METHOD(Enum):  # noqa: N801
     EXACT = "exact"
     NNDSVD = "nndsvd"
 
-    @staticmethod
-    def parse(value: str | Enum | None) -> "INIT_METHOD":
-        if isinstance(value, INIT_METHOD):
-            return value
-        if value is None:
-            return INIT_METHOD.RANDOM
-        try:
-            return INIT_METHOD(value.lower())
-        except (ValueError, AttributeError) as exc:
-            msg = f"Unknown initialization method: {value}. "
-            msg += f"Available methods are: {INIT_METHOD.options()}"
-            raise SeqNMFInitializationError(msg) from exc
-
-    @staticmethod
-    def options() -> list[str]:
-        return [m.value for m in INIT_METHOD]
+    @classmethod
+    def default(cls) -> "INIT_METHOD":
+        return cls.RANDOM
 
     # DOC-ME: Write docstring explained each method.
 
@@ -72,7 +112,7 @@ class INIT_METHOD(Enum):  # noqa: N801
 INITIALIZATION_METHODS: type[str] = Literal["random", "exact", "nndsvd"]
 
 
-class RECON_METHOD(Enum):  # noqa: N801
+class RECON_METHOD(_GSEQNMF_METHOD_BASE):  # noqa: N801
     """
     Enumeration of reconstruction method for the GseqNMF algorithm.
     """
@@ -80,22 +120,9 @@ class RECON_METHOD(Enum):  # noqa: N801
     NORMAL = "normal"
     FAST = "fast"
 
-    @staticmethod
-    def parse(value: str | Enum | None) -> "RECON_METHOD":
-        if isinstance(value, RECON_METHOD):
-            return value
-        if value is None:
-            return RECON_METHOD.FAST
-        try:
-            return RECON_METHOD(value.lower())
-        except (ValueError, AttributeError) as exc:
-            msg = f"Unknown reconstruction solver: {value}. "
-            msg += f"Available solvers are: {RECON_METHOD.options()}"
-            raise SeqNMFInitializationError(msg) from exc
-
-    @staticmethod
-    def options() -> list[str]:
-        return [m.value for m in RECON_METHOD]
+    @classmethod
+    def default(cls) -> "RECON_METHOD":
+        return cls.FAST
 
     # DOC-ME: Write docstring explained each method.
 
@@ -104,7 +131,7 @@ class RECON_METHOD(Enum):  # noqa: N801
 RECONSTRUCTION_METHODS: type[str] = Literal["normal", "fast"]
 
 
-class W_UPDATE_METHOD(Enum):  # noqa: N801
+class W_UPDATE_METHOD(_GSEQNMF_METHOD_BASE):  # noqa: N801
     """
     Enumeration of update methods for the W matrix in the GseqNMF algorithm.
     """
@@ -113,22 +140,11 @@ class W_UPDATE_METHOD(Enum):  # noqa: N801
     PARTIAL = "partial"
     FULL = "full"
 
-    @staticmethod
-    def parse(value: str | Enum | None) -> "RECON_METHOD":
-        if isinstance(value, W_UPDATE_METHOD):
-            return value
-        if value is None:
-            return W_UPDATE_METHOD.FULL
-        try:
-            return W_UPDATE_METHOD(value.lower())
-        except (ValueError, AttributeError) as exc:
-            msg = f"Unknown W update setting: {value}. "
-            msg += f"Available settings are: {W_UPDATE_METHOD.options()}"
-            raise SeqNMFInitializationError(msg) from exc
+    @classmethod
+    def default(cls) -> "W_UPDATE_METHOD":
+        return cls.FULL
 
-    @staticmethod
-    def options() -> list[str]:
-        return [m.value for m in W_UPDATE_METHOD]
+    # DOC-ME: Write docstring explained each method.
 
 
 #: Options for W update methods in the GseqNMF algorithm (Docs/Hints).

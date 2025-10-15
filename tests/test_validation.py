@@ -10,6 +10,7 @@ from gseqnmf.gseqnmf import GseqNMF
 from gseqnmf.validation import (
     INIT_METHOD,
     RECON_METHOD,
+    W_UPDATE_METHOD,
     cuda_available,
     device_available,
     is_valid_device,
@@ -93,6 +94,46 @@ class TestReconMethod:
     def test_recon_method_parse_short_circuit() -> None:
         method = RECON_METHOD.NORMAL
         assert RECON_METHOD.parse(method) is method
+
+
+class TestWUpdateMethod:
+    @staticmethod
+    @pytest.mark.parametrize(
+        ("input_value", "expected_method"),
+        [
+            pytest.param("fixed", W_UPDATE_METHOD.FIXED, id="valid_fixed"),
+            pytest.param("partial", W_UPDATE_METHOD.PARTIAL, id="valid_partial"),
+            pytest.param("full", W_UPDATE_METHOD.FULL, id="valid_full"),
+            pytest.param(None, W_UPDATE_METHOD.FULL, id="default_full"),
+        ],
+    )
+    def test_w_update_method_parse_returns_correct_method(
+        input_value: str | None, expected_method: W_UPDATE_METHOD
+    ) -> None:
+        assert W_UPDATE_METHOD.parse(input_value) == expected_method
+
+    @staticmethod
+    @pytest.mark.parametrize(
+        "invalid_value",
+        [
+            pytest.param("invalid", id="invalid_string"),
+            pytest.param(123, id="invalid_type"),
+        ],
+    )
+    def test_w_update_method_parse_raises_error_for_invalid_method(
+        invalid_value: str | int,
+    ) -> None:
+        with pytest.raises(SeqNMFInitializationError):
+            W_UPDATE_METHOD.parse(invalid_value)
+
+    @staticmethod
+    def test_w_update_method_options_returns_all_methods() -> None:
+        assert set(W_UPDATE_METHOD.options()) == {"fixed", "partial", "full"}
+
+    @staticmethod
+    def test_w_update_method_parse_short_circuit() -> None:
+        method = W_UPDATE_METHOD.FIXED
+        assert W_UPDATE_METHOD.parse(method) is method
 
 
 class TestGPUValidation:

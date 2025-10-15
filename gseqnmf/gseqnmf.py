@@ -3,6 +3,7 @@ from functools import partial
 from types import ModuleType
 from warnings import warn
 
+import cupyx.scipy.signal
 import numpy as np
 from scipy.signal import convolve2d
 from sklearn.base import BaseEstimator, TransformerMixin, _fit_context
@@ -46,6 +47,10 @@ from gseqnmf.validation import (
     cuda_available,
     device_available,
 )
+
+_cupy_convol2d = cupyx.scipy.signal.convolve2d if CUPY_INSTALLED else None
+# TODO: Warning for experimental kernel?
+
 
 __all__ = [
     "GseqNMF",
@@ -136,8 +141,8 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         ###########################################
         self._is_fitted: bool = False
         # NOTE: This is an  sklearn flag to indicate if the model has been fitted.
-        self.n_features_in: int | None = None
-        self.n_samples_in: int | None = None
+        self.n_features_in_: int | None = None
+        self.n_samples_in_: int | None = None
         self.W_ = None
         self.H_ = None
         self.cost_ = None
@@ -147,11 +152,9 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         # NOTE: This is sklearn's internal validation routine that leverages the
         #   class attribute _parameter_constraints attribute defined above. Note, it
         #   does not validate the use_gpu parameter.
+        ###########################################
         if use_gpu:
             self._validate_gpu()
-            self.xp_ = self._import_cupy()
-        else:
-            self.xp_ = np
         ############################################
         self._set_recon_method()
 
@@ -165,6 +168,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         W_init: np.ndarray | None = None,  # noqa: N803
         H_init: np.ndarray | None = None,  # noqa: N803
         random_state: int | None = None,
+        xp: ModuleType = np,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Initialize W and H matrices based on the specified method.
@@ -180,18 +184,18 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         :returns: Tuple of (padded_X, W_init, H_init, init).
         """
 
-        padded_X = pad_data(X, sequence_length)  # noqa: N806
+        padded_X = pad_data(X, sequence_length, xp=xp)  # noqa: N806
         match init:
             case INIT_METHOD.RANDOM:
                 W_init = (  # noqa: N806
-                    random_init_W(padded_X, n_components, sequence_length, random_state)
+                    random_init_W(
+                        padded_X, n_components, sequence_length, random_state, xp=xp
+                    )
                     if W_update.value != W_UPDATE_METHOD.FIXED.value
                     else W_init
                 )
                 H_init = random_init_H(  # noqa: N806
-                    padded_X,
-                    n_components,
-                    random_state,
+                    padded_X, n_components, random_state, xp=xp
                 )
             case INIT_METHOD.EXACT:
                 if W_init is None or H_init is None:
@@ -224,19 +228,22 @@ class GseqNMF(TransformerMixin, BaseEstimator):
                     n_components,
                     sequence_length,
                 )
-        return padded_X, W_init, H_init
+        return xp.asarray(padded_X), xp.asarray(W_init), xp.asarray(H_init)
 
     @staticmethod
     def _prep_handles(
         padded_X: NDArrayLike,  # noqa: N803
         sequence_length: int,
         off_diagonal: NDArrayLike,
+        recon_func: Callable,
         # lam_W: float = 0.0,
         lam_H: float = 0.0,  # noqa: N803
         epsilon: float = np.finfo(float).eps,
+        xp: ModuleType = np,
     ) -> dict[str, Callable]:
         """
-        Prepare function handles for repeated calculations.
+        Prepare function handles for repeated calculations by binding fixed parameters,
+        particularly the numerical computing module (numpy or cupy).
 
         :param padded_X: Padded input data.
         :param sequence_length: Length of the sequences.
@@ -244,34 +251,45 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         :returns: Dictionary of function handles for various calculations.
         """
         padding_index = slice(sequence_length, -sequence_length)
-        cost_func = partial(
-            rmse,
-            X=padded_X,
-            padding_index=padding_index,
-        )
+        cost_func = partial(rmse, X=padded_X, padding_index=padding_index, xp=xp)
         loading_func = partial(
-            calculate_loading_power, X=padded_X, padding_index=padding_index
+            calculate_loading_power, X=padded_X, padding_index=padding_index, xp=xp
         )
-        power_func = partial(calculate_power, X=padded_X, padding_index=padding_index)
-        kernel = np.ones([1, (2 * sequence_length) - 1])
-        conv_func = partial(convolve2d, in2=kernel, mode="same")
+        power_func = partial(
+            calculate_power, X=padded_X, padding_index=padding_index, xp=xp
+        )
+        kernel = xp.ones([1, (2 * sequence_length) - 1])
+        conv_func = (
+            partial(convolve2d, in2=kernel, mode="same")
+            if xp.__name__ == "numpy"
+            else partial(_cupy_convol2d, in2=kernel, mode="same")
+        )
         tensor_func = partial(
-            trans_tensor_convolution, X=padded_X, sequence_length=sequence_length
+            trans_tensor_convolution,
+            X=padded_X,
+            sequence_length=sequence_length,
+            xp=xp,
         )
         renormalize_func = partial(
-            renormalize, sequence_length=sequence_length, epsilon=epsilon
+            renormalize,
+            sequence_length=sequence_length,
+            epsilon=epsilon,
+            xp=xp,
         )
         add_x_ortho_h_penalty_func = partial(
             add_x_ortho_h_penalty,
             off_diagonal=off_diagonal,
             conv_func=conv_func,
+            xp=xp,
         )
         add_events_penalty_func = partial(
             add_events_penalty,
             lam_H=lam_H,
             off_diagonal=off_diagonal,
             conv_func=conv_func,
+            xp=xp,
         )
+        recon_func = partial(recon_func, xp=xp)
         return {
             "cost": cost_func,
             "loading": loading_func,
@@ -281,6 +299,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             "norm": renormalize_func,
             "x_ortho_h": add_x_ortho_h_penalty_func,
             "events": add_events_penalty_func,
+            "recon": recon_func,
         }
 
     @staticmethod
@@ -294,7 +313,8 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         lam_W: float,  # noqa: N803
         update_W: bool,  # noqa: N803
         recon: RECON_METHOD,
-    ) -> dict[str, np.ndarray]:
+        xp: ModuleType = np,
+    ) -> dict[str, NDArrayLike]:
         """
         Preallocate arrays for intermediate calculations.
 
@@ -311,29 +331,29 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         """
         n_samples = n_samples + 2 * sequence_length
         return {
-            "cost": np.ones((max_iter + 1, 1)) * np.nan,
-            "h_shifted": np.empty((n_components, n_samples)),
-            "recon_h_shifted": np.empty((sequence_length, n_components, n_samples))
+            "cost": xp.ones((max_iter + 1, 1)) * xp.nan,
+            "h_shifted": xp.empty((n_components, n_samples)),
+            "recon_h_shifted": xp.empty((sequence_length, n_components, n_samples))
             if recon == RECON_METHOD.FAST
             else None,
-            "pd_penalty_h": np.empty((n_components, n_samples)),
-            "pd_penalty_w": np.empty((n_features, n_components)),
-            "x_hat": np.empty((n_features, n_samples)),
-            "wt_x": np.empty((n_components, n_samples)),
-            "wt_x_hat": np.empty((n_components, n_samples)),
-            "xs": np.empty((n_features, n_samples))
+            "pd_penalty_h": xp.empty((n_components, n_samples)),
+            "pd_penalty_w": xp.empty((n_features, n_components)),
+            "x_hat": xp.empty((n_features, n_samples)),
+            "wt_x": xp.empty((n_components, n_samples)),
+            "wt_x_hat": xp.empty((n_components, n_samples)),
+            "xs": xp.empty((n_features, n_samples))
             if (lam > 0.0 and update_W.value == W_UPDATE_METHOD.FULL.value)
             else None,
-            "w_flat": np.empty((n_features, n_components)) if lam_W > 0.0 else None,
+            "w_flat": xp.empty((n_features, n_components)) if lam_W > 0.0 else None,
         }
 
     # noinspection PyUnusedLocal
     @staticmethod
     def _inverse_transform(
-        W: np.ndarray,  # noqa: N803
-        H: np.ndarray,  # noqa: N803
-        h_shifted: np.ndarray | None,
-    ) -> np.ndarray:
+        W: NDArrayLike,  # noqa: N803
+        H: NDArrayLike,  # noqa: N803
+        h_shifted: NDArrayLike | None,
+    ) -> NDArrayLike:
         """Placeholder for the inverse transform method set in _set_recon_method."""
         msg = "This method should be set in _set_recon_method."
         raise NotImplementedError(msg)
@@ -359,7 +379,9 @@ class GseqNMF(TransformerMixin, BaseEstimator):
 
         return cp
 
-    # HACK: This is hacky, but I want to pass the xp module dynamically
+    # HACK: This is hacky, but I want to pass the xp module dynamically. We (should?)
+    #  be able to call this a bunch without any penalty since the import should be
+    #  cached.
 
     @_fit_context(prefer_skip_nested_validation=True)
     def fit(
@@ -389,8 +411,19 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             warn(msg, UserWarning, stacklevel=2)
 
         (self.W_, self.H_, self.cost_, self.loadings_, self.power_) = self._fit(
-            X=X, W=W, H=H, W_update=self.W_update
+            X=X,
+            W=W,
+            H=H,
+            W_update=self.W_update,
+            xp=self._import_cupy() if self.use_gpu else np,
         )
+
+        self.W_ = self._get_array(self.W_)
+        self.H_ = self._get_array(self.H_)
+        self.cost_ = self._get_array(self.cost_)
+        self.loadings_ = self._get_array(self.loadings_)
+        self.power_ = self._get_array(self.power_)
+        # NOTE: We transfer the arrays back to CPU if necessary.
 
         if self.sort:
             self.W_, self.H_, self.loadings_ = sort_indices(
@@ -434,9 +467,9 @@ class GseqNMF(TransformerMixin, BaseEstimator):
 
     def fit_transform(
         self,
-        X: np.ndarray,  # noqa: N803
-        W: np.ndarray | None = None,  # noqa: N803
-        H: np.ndarray | None = None,  # noqa: N803
+        X: NDArrayLike,  # noqa: N803
+        W: NDArrayLike | None = None,  # noqa: N803
+        H: NDArrayLike | None = None,  # noqa: N803
     ) -> np.ndarray:
         """
         Fit the model to ``X`` and return the transformed data.
@@ -453,7 +486,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         self.fit(X=X, W=W, H=H)
         return self.H_
 
-    def transform(self, X: np.ndarray) -> np.ndarray:  # noqa: N803
+    def transform(self, X: NDArrayLike) -> np.ndarray:  # noqa: N803
         """
         Transform the data ``X`` using the fitted model.
 
@@ -464,17 +497,18 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         _, H, _, _, _ = self._fit(  # noqa: N806
             X=X,
             W=self.W_,
-            H=self.H_,
+            H=None,
             W_update=W_UPDATE_METHOD.FIXED,
+            xp=self._import_cupy() if self.use_gpu else np,
         )
-        return H
+        return self._get_array(H)
 
     # noinspection PyMethodMayBeStatic
     def inverse_transform(
         self,
-        W: np.ndarray | None = None,  # noqa: N803
-        H: np.ndarray | None = None,  # noqa: N803
-        h_shifted: np.ndarray | None = None,
+        W: NDArrayLike | None = None,  # noqa: N803
+        H: NDArrayLike | None = None,  # noqa: N803
+        h_shifted: NDArrayLike | None = None,
     ) -> np.ndarray:
         """
         Reconstruct the data from W and H matrices.
@@ -488,8 +522,19 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         #  premature checking of fitted status.
         W = W if W is not None else self.W_  # noqa: N806
         H = H if H is not None else self.H_  # noqa: N806
+        _xp = self._import_cupy() if self.use_gpu else np
+        W = _xp.asarray(W)  # noqa: N806
+        H = _xp.asarray(H)  # noqa: N806
+        if h_shifted is not None:
+            h_shifted = _xp.asarray(h_shifted)
         check_is_fitted(self)
-        return self._inverse_transform(W=W, H=H, h_shifted=h_shifted)
+        return self._get_array(
+            self._inverse_transform(
+            W=_xp.asarray(W),
+            H=_xp.asarray(H),
+            h_shifted=_xp.asarray(h_shifted),
+            xp=_xp)
+        )
 
     def _fit(
         self,
@@ -497,7 +542,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         W_update: W_UPDATE_METHOD,  # noqa: N803
         W: NDArrayLike | None = None,  # noqa: N803
         H: NDArrayLike | None = None,  # noqa: N803
-        xp: ModuleType = np,  # TODO: drop-in
+        xp: ModuleType = np,
     ) -> tuple[NDArrayLike, NDArrayLike, NDArrayLike, NDArrayLike, float]:
         """
         Core fitting routine for seqNMF.
@@ -508,9 +553,9 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         :param xp: Numerical computing module (numpy or cupy).
         :return: Tuple of (W, H, cost, loadings, power).
         """
-        self.n_samples_in, self.n_features_in = X.shape
+        self.n_samples_in_, self.n_features_in_ = X.shape
 
-        X = np.ascontiguousarray(X.T)  # noqa: N806
+        X = xp.ascontiguousarray(xp.asarray(X).T)  # noqa: N806
         # NOTE: sklearn convention is (n_samples, n_features). We transpose and enforce
         #   contiguous array for performance in the underlying routines.
         # OPTIMIZE: We could add some sort of flag here to short circuit this step?
@@ -559,6 +604,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
                 W_update=W_update,
                 W_init=W,
                 H_init=H,
+                xp=xp,
             )
         else:
             X, W, H = self._initialize(  # noqa: N806
@@ -569,10 +615,11 @@ class GseqNMF(TransformerMixin, BaseEstimator):
                 W_update=W_update,
                 W_init=W,
                 H_init=H,
+                xp=xp,
             )
 
-        epsilon = np.max(X) * 1e-6
-        off_diagonal = 1 - np.eye(self.n_components)
+        epsilon = xp.max(X) * 1e-6
+        off_diagonal = 1 - xp.eye(self.n_components)
 
         _handles = self._prep_handles(
             X,
@@ -581,6 +628,8 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             # lam_W=self.lam_W,
             lam_H=self.lam_H,
             epsilon=epsilon,
+            xp=xp,
+            recon_func=self._inverse_transform,
         )
         cost_func = _handles["cost"]
         loading_func = _handles["loading"]
@@ -590,10 +639,10 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         renormalize_func = _handles["norm"]
         add_events_penalty_func = _handles["events"]
         add_x_ortho_h_penalty_func = _handles["x_ortho_h"]
-
+        recon_func = _handles["recon"]
         _prealloc = self._preallocate(
-            n_features=self.n_features_in,
-            n_samples=self.n_samples_in,
+            n_features=self.n_features_in_,
+            n_samples=self.n_samples_in_,
             n_components=self.n_components,
             sequence_length=self.sequence_length,
             max_iter=self.max_iter,
@@ -601,6 +650,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             lam_W=self.lam_W,
             update_W=W_update,
             recon=self.recon,
+            xp=xp,
         )
         cost = _prealloc["cost"]
         h_shifted = _prealloc["h_shifted"]
@@ -613,7 +663,7 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         wt_x = _prealloc["wt_x"]
         wt_x_hat = _prealloc["wt_x_hat"]
 
-        x_hat[:] = self._inverse_transform(W=W, H=H, h_shifted=recon_h_shifted)
+        x_hat[:] = recon_func(W=W, H=H, h_shifted=recon_h_shifted)
         cost[0] = cost_func(x_hat=x_hat)
         # NOTE: Initial cost before any updates
 
@@ -666,12 +716,12 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             #  bottleneck, specifically the conv2d operation called in the non-scalar
             #  x-ortho & events penalties.
 
-            H *= np.divide(wt_x, wt_x_hat + pd_penalty_h + epsilon)  # noqa: N806
+            H *= xp.divide(wt_x, wt_x_hat + pd_penalty_h + epsilon)  # noqa: N806
             if self.shift:
-                W, H = shift_factors(W, H)  # noqa: N806
+                W, H = shift_factors(W, H, xp=xp)  # noqa: N806
                 W += epsilon  # noqa: N806
             renormalize_func(W=W, H=H)
-            x_hat[:] = self._inverse_transform(W=W, H=H, h_shifted=recon_h_shifted)
+            x_hat[:] = recon_func(W=W, H=H, h_shifted=recon_h_shifted)
 
             if W_update.value != W_UPDATE_METHOD.FIXED.value:
                 if self.lam_W > 0:
@@ -681,25 +731,26 @@ class GseqNMF(TransformerMixin, BaseEstimator):
                     xs[:] = conv_func(X)
 
                 for shift in range(self.sequence_length):
-                    h_shifted[:] = np.roll(H, shift - 1, axis=1)
-                    x_ht = np.dot(X, h_shifted.T)
-                    x_hat_ht = np.dot(x_hat, h_shifted.T)
+                    h_shifted[:] = xp.roll(H, shift - 1, axis=1)
+                    x_ht = xp.dot(X, h_shifted.T)
+                    x_hat_ht = xp.dot(x_hat, h_shifted.T)
 
                     if (local_lam > 0) and W_update.value == W_UPDATE_METHOD.FULL.value:
-                        pd_penalty_w[:] = np.dot(
-                            local_lam * np.dot(xs, h_shifted.T), off_diagonal
+                        pd_penalty_w[:] = xp.dot(
+                            local_lam * xp.dot(xs, h_shifted.T), off_diagonal
                         )
                     else:
                         pd_penalty_w.fill(0.0)
 
                     if self.lam_W > 0:
-                        pd_penalty_w += np.dot(self.lam_W * w_flat, off_diagonal)
+                        pd_penalty_w += xp.dot(self.lam_W * w_flat, off_diagonal)
 
                     pd_penalty_w += self.alpha_W
 
-                    W[:, :, shift] *= np.divide(x_ht, x_hat_ht + pd_penalty_w + epsilon)
-
-            x_hat[:] = self._inverse_transform(W=W, H=H, h_shifted=recon_h_shifted)
+                    W[:, :, shift] *= xp.divide(x_ht, x_hat_ht + pd_penalty_w + epsilon)
+            # REVIEW: Maybe we should encapsulate this to make the code still easy to
+            # follow and swap-in potential optimizations
+            x_hat[:] = recon_func(W=W, H=H, h_shifted=recon_h_shifted)
             cost[iter_] = cost_func(x_hat=x_hat)
             post_fix["cost"] = f"{cost[iter_].item():.4e}"
             pbar.update()
@@ -719,6 +770,15 @@ class GseqNMF(TransformerMixin, BaseEstimator):
             loading_func(W=W, H=H),
             power_func(x_hat=x_hat),
         )
+
+    def _get_array(self, array: NDArrayLike) -> NDArrayLike:
+        """
+        Get the array on the appropriate device.
+
+        :param array: Input array.
+        :returns: Array on the appropriate device.
+        """
+        return array.get() if self.use_gpu else array
 
     def _set_recon_method(self) -> None:
         """

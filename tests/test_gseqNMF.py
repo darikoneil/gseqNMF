@@ -1,4 +1,6 @@
 # noqa: N999
+from types import ModuleType
+
 import numpy as np
 import pytest
 from sklearn.exceptions import NotFittedError
@@ -12,23 +14,20 @@ from tests.conftest import MEANING_OF_LIFE, Dataset
 
 class TestGseqNMF:
     @pytest.fixture(autouse=True)
-    def _setup(self, example_dataset: Dataset) -> None:
+    def _setup(
+        self,
+        example_dataset: Dataset,
+    ) -> None:
         self.test_dataset = example_dataset
+
+    def _init_model(self, xp: ModuleType = np) -> None:
         self.model = GseqNMF(
             n_components=self.test_dataset.parameters["num_components"],
             sequence_length=self.test_dataset.parameters["sequence_length"],
             max_iter=self.test_dataset.parameters["max_iter"],
             init=INIT_METHOD.EXACT,
             random_state=MEANING_OF_LIFE,
-        )
-
-    def _reset_model(self) -> None:
-        self.model = GseqNMF(
-            n_components=self.test_dataset.parameters["num_sequences"],
-            sequence_length=self.test_dataset.parameters["sequence_length"],
-            max_iter=self.test_dataset.parameters["max_iter"],
-            init="random",
-            random_state=MEANING_OF_LIFE,
+            use_gpu=xp.__name__ == "cupy",
         )
 
     @pytest.mark.parametrize(
@@ -72,7 +71,7 @@ class TestGseqNMF:
         )
         assert (padded_X, W_init, H_init) == expected
 
-    def test_initialize_exact(self) -> None:
+    def test_initialize_exact(self, xp_imp: ModuleType) -> None:
         # noinspection PyTupleAssignmentBalance
         _, W_init, H_init = GseqNMF._initialize(  # noqa: N806, SLF001
             X=self.test_dataset.data.copy(),
@@ -84,15 +83,18 @@ class TestGseqNMF:
             H_init=pad_data(
                 self.test_dataset.H.copy(),
                 self.test_dataset.parameters["sequence_length"],
+                xp=xp_imp,
             ),
             random_state=MEANING_OF_LIFE,
+            xp=xp_imp,
         )
-        np.testing.assert_equal(W_init, self.test_dataset.W)
-        np.testing.assert_equal(
+        xp_imp.testing.assert_allclose(W_init, xp_imp.asarray(self.test_dataset.W))
+        xp_imp.testing.assert_allclose(
             H_init,
             pad_data(
-                self.test_dataset.H.copy(),
+                xp_imp.asarray(self.test_dataset.H.copy()),
                 self.test_dataset.parameters["sequence_length"],
+                xp=xp_imp,
             ),
         )
 
@@ -135,6 +137,7 @@ class TestGseqNMF:
             )
 
     def test_get_params(self) -> None:
+        self._init_model()
         params = self.model.get_params()
         expected_params = {
             "n_components": self.test_dataset.parameters["num_components"],
@@ -170,6 +173,7 @@ class TestGseqNMF:
         // The try-except block ensures the model is reset after shenanigans.
         ////////////////////////////////////////////////////////////////////////////////
         """
+        self._init_model()
         self.model.set_params(**params)
         for key, value in expected_values.items():
             try:
@@ -185,16 +189,19 @@ class TestGseqNMF:
         with pytest.raises(AttributeError):
             self.model.set_params(invalid_param="Don't Panic!")
 
-    def test_fitting(self) -> None:
+    def test_fitting(self, xp_imp: ModuleType) -> None:
+        self._init_model(xp=xp_imp)
         self.model.fit(
             self.test_dataset.data.T.copy(),
             W=self.test_dataset.parameters["W_init"].copy(),
             H=self.test_dataset.parameters["H_init"].copy(),
         )
+
         assert self.model.power_ >= self.test_dataset.power
         assert self.model.cost_[-1] <= self.test_dataset.cost[-1]
 
-    def test_fit_transform(self) -> None:
+    def test_fit_transform(self, xp_imp: ModuleType) -> None:
+        self._init_model(xp=xp_imp)
         H = self.model.fit_transform(  # noqa: N806
             self.test_dataset.data.T.copy(),
             self.test_dataset.parameters["W_init"].copy(),
@@ -208,7 +215,8 @@ class TestGseqNMF:
             self.test_dataset.data.shape[1],
         )
 
-    def test_transform(self) -> None:
+    def test_transform(self, xp_imp: ModuleType) -> None:
+        self._init_model(xp=xp_imp)
         self.model.fit(
             self.test_dataset.data.T.copy(),
             W=self.test_dataset.parameters["W_init"].copy(),
@@ -231,22 +239,26 @@ class TestGseqNMF:
         #  Maybe in the future we can understand how to improve this.
 
     def test_transform_premature_call(self) -> None:
+        self._init_model()
         with pytest.raises(NotFittedError):
             self.model.transform(self.test_dataset.data.T.copy())
 
     def test_inverse_transform_premature_call(self) -> None:
+        self._init_model()
         with pytest.raises(NotFittedError):
             self.model.inverse_transform(
                 self.test_dataset.W.copy(), self.test_dataset.H.copy()
             )
 
     def test_inner_inverse_transform_premature_call(self) -> None:
+        self._init_model()
         with pytest.raises(NotImplementedError):
             GseqNMF._inverse_transform(  # noqa: SLF001
                 self.test_dataset.W.copy(), self.test_dataset.H.copy(), None
             )
 
     def test_warn_y(self) -> None:
+        self._init_model()
         with pytest.warns(UserWarning, match="y*None"):
             self.model.fit(
                 self.test_dataset.data.T.copy(),

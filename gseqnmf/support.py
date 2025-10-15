@@ -147,7 +147,7 @@ def reconstruct(
     """
     n_features, _, sequence_length = W.shape
     _, n_samples = H.shape
-    x_hat = xp.zeros((n_features, n_samples), dtype=W.dtype)
+    x_hat = xp.zeros((n_features, n_samples))
     for idx in range(sequence_length):
         x_hat += xp.dot(W[:, :, idx], xp.roll(H, idx - 1, axis=1))
     return x_hat
@@ -188,7 +188,7 @@ def reconstruct_fast(
     _, n_samples = H.shape
 
     if h_shifted is None:
-        h_shifted = xp.zeros((sequence_length, n_components, n_samples), dtype=H.dtype)
+        h_shifted = xp.zeros((sequence_length, n_components, n_samples))
     # else:
     #     h_shifted.fill(0)
 
@@ -196,7 +196,6 @@ def reconstruct_fast(
     sequence_index = xp.arange(sequence_length)[:, None]
     idx = (sample_index[None, :] - (sequence_index - 1)) % n_samples
     h_shifted[:] = xp.swapaxes(H[:, idx], 0, 1)
-
     return xp.tensordot(W, h_shifted, axes=([1, 2], [1, 0]))
 
 
@@ -266,10 +265,11 @@ def add_events_penalty(
     lam_H: float,  # noqa: N803
     off_diagonal: NDArrayLike,
     conv_func: Callable,
+    xp: ModuleType = np,
 ) -> None:
     if lam_H <= 0.0:
         return
-    penalty += np.dot(lam_H * off_diagonal, conv_func(H))
+    penalty += xp.dot(lam_H * off_diagonal, conv_func(H))
 
 
 def check_convergence(
@@ -354,8 +354,8 @@ def sort_indices(
 
 
 def shift_factors(
-    W: np.ndarray,  # noqa: N803
-    H: np.ndarray,  # noqa: N803
+    W: NDArrayLike,  # noqa: N803
+    H: NDArrayLike,  # noqa: N803
     xp: ModuleType = np,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
@@ -412,7 +412,7 @@ def pad_data(
     :return: Padded data matrix (n_samples + 2 * sequence_length x n_features).
     """
     return xp.pad(
-        X,
+        xp.asarray(X),
         ((0, 0), (sequence_length, sequence_length)),
         mode="constant",
         constant_values=0,
@@ -478,6 +478,7 @@ def renormalize(
     H: NDArrayLike,  # noqa: N803
     sequence_length: int,
     epsilon: float = np.finfo(float).eps,
+    xp: ModuleType = np,
 ) -> None:
     """
     Renormalize W and H so that each component in H has unit norm.
@@ -486,12 +487,13 @@ def renormalize(
     :param H:
     :param sequence_length:
     :param epsilon:
+    :param xp: Array module (e.g., numpy or cupy) for computation.
     :return: None. W and H are modified in place.
     """
-    norms = np.sqrt(np.sum(np.power(H, 2), axis=1)).T
-    H[:] = np.dot(np.diag(np.divide(1.0, norms + epsilon)), H)
+    norms = xp.sqrt(xp.sum(xp.power(H, 2), axis=1)).T
+    H[:] = xp.dot(xp.diag(xp.divide(1.0, norms + epsilon)), H)
     for shift in range(sequence_length):
-        W[:, :, shift] = np.dot(W[:, :, shift], np.diag(norms))
+        W[:, :, shift] = xp.dot(W[:, :, shift], xp.diag(norms))
     # NOTE: The norms calculation is cheap and doesn't require pre-allocation
 
 
@@ -502,6 +504,7 @@ def trans_tensor_convolution(
     wt_x: np.ndarray,
     wt_x_hat: np.ndarray,
     sequence_length: int,
+    xp: ModuleType = np,
 ) -> None:
     """
     Compute W⊤ ⊛ X and W⊤ ⊛ X̂ using tensor convolution.
@@ -512,6 +515,7 @@ def trans_tensor_convolution(
     :param wt_x: Preallocated output for W⊤ ⊛ X (n_components x n_samples).
     :param wt_x_hat: Preallocated output for W⊤ ⊛ X̂ (n_components x n_samples).
     :param sequence_length: Length of the sequences.
+    :param xp: Array module (e.g., numpy or cupy) for computation.
 
     :returns: None. Outputs are written to pre-allocated wt_x and wt_x_hat.
     """  # noqa: RUF002
@@ -537,8 +541,8 @@ def trans_tensor_convolution(
         temp_x = W[:, :, step].T @ X
         temp_x_hat = W[:, :, step].T @ x_hat
         shift = -step + 1
-        wt_x += np.roll(temp_x, shift, axis=1)
-        wt_x_hat += np.roll(temp_x_hat, shift, axis=1)
+        wt_x += xp.roll(temp_x, shift, axis=1)
+        wt_x_hat += xp.roll(temp_x_hat, shift, axis=1)
     # NOTE: The assignments to temp_x and temp_x_hat are cheap and don't require
     #  pre-allocation
 
