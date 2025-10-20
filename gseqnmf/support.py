@@ -177,10 +177,10 @@ def reconstruct_fast(
     repeated memory allocation (sequence_length x n_components x n_samples). The
     algorithm has a similar time complexity as the standard reconstruction, but more
     optimally leverages optimized BLAS routines and cache locality. Unfortunately, this
-    implementation has a higher space complexity at ~O(CLS), where C is the number of
+    implementation requires more memory at ~CLS additional elements, where C is the number of
     components, L is the sequence length, and S is the number of samples. This can be
     pretty problematic for large datasets. In those cases, the standard reconstruction
-    function should be used instead, which has ~O(FS), where F is the number of
+    function should be used instead, which has ~FS additional elements, where F is the number of
     features.
     ====================================================================================
     """
@@ -525,12 +525,12 @@ def trans_tensor_convolution(
     W⊤ ⊛ X and W⊤ ⊛ X̂ used in the seqNMF algorithm. It avoids rolling the large data
     matrices X and X̂ by instead rolling the smaller intermediate results. W should be
     much smaller than X in 99% of use cases, leading to significant performance
-    improvements. This implementation has time complexity of ~O(NKLS), where N is
+    improvements. This implementation has passes over NKLS elements, where N is
     the number of features, K is the number of components,L is the sequence length,
-    and S is the number of samples. The space complexity reduction is ~N/K, since we
+    and S is the number of samples. The memory reduction is ~N/K, since we
     only need to store the small intermediate results instead of making rolled copies of
     the large data matrices. This implementation is substantially faster than the
-    fully vectorized Einstein summation, which has time complexity of ~O(NKLS + KLS^2)
+    fully vectorized Einstein summation, which has requires NKLS + KLS^2 elements
     due to the convolution step, and is also more memory efficient since it avoids
     creating large intermediate tensors.
     ====================================================================================
