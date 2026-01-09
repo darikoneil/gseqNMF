@@ -559,10 +559,8 @@ class GseqNMF(TransformerMixin, BaseEstimator):
         # NOTE: sklearn convention is (n_samples, n_features). We transpose and enforce
         #   contiguous array for performance in the underlying routines.
         # OPTIMIZE: We could add some sort of flag here to short circuit this step?
-        # OPTIMIZE: We could rework some of the math to avoid O(n) space complexity,
-        #  but we'd need to check how that impacts cache locality. If we were
-        #  offloading to a GPU, I think it's O(1) for RAM since we don't need to
-        #  actually enforce CPU contiguity in that case (I think)? Maybe there's
+        # OPTIMIZE: We could rework some of the math to avoid space complexity,
+        #  but we'd need to check how that impacts cache locality. Maybe there's
         #  some transient memory explosion on the GPU when we do this, but worst case
         #  we could always transfer in chunks. We probably want to do that anyway since
         #  VRAM is more limited.
